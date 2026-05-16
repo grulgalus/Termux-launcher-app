@@ -2,12 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.termuxlauncher">
 
-    <!-- NUKLEÁRNÍ MOŽNOST: Úplné prolomení Package Visibility blokády -->
+    <!-- ZÁSADNÍ PRO LENOVO: Povolení objevit se v "Zobrazení přes ostatní aplikace" -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
-
-    <queries>
-        <package android:name="com.termux" />
-    </queries>
 
     <application
         android:allowBackup="true"
@@ -19,16 +16,17 @@
         
         <service
             android:name=".ShortcutService"
-            android:permission="android.permission.BIND_INPUT_METHOD"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="true"
-            android:label="Termux Zkratka (Klávesnice)">
+            android:label="Termux Zkratka">
             <intent-filter>
-                <action android:name="android.view.InputMethod" />
+                <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
             
+            <!-- Ujisti se, že máš soubor res/xml/accessibility_service_config.xml ! -->
             <meta-data
-                android:name="android.view.im"
-                android:resource="@xml/method" />
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
         </service>
 
     </application>
