@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Termux Launcher</string>
+    <string name="accessibility_desc">Služba pro spuštění Termuxu pomocí Option + T</string>
 </resources>
