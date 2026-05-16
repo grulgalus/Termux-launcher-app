@@ -2,6 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.termuxlauncher">
 
+    <!-- TADY JE TA OPRAVA: Povolení vidět Termux -->
+    <queries>
+        <package android:name="com.termux" />
+    </queries>
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -10,7 +15,6 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
         
-        <!-- Zde je ta magická změna: Už nejsme Usnadnění, jsme Klávesnice! -->
         <service
             android:name=".ShortcutService"
             android:permission="android.permission.BIND_INPUT_METHOD"
