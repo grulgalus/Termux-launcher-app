@@ -1,34 +1,47 @@
 package com.example.termuxlauncher
 
-import android.inputmethodservice.InputMethodService
-import android.content.Intent
+import android.accessibilityservice.AccessibilityService
 import android.view.KeyEvent
+import android.content.Intent
+import android.content.ComponentName
 import android.util.Log
 
-class ShortcutService : InputMethodService() {
-    
-    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        // Logování kláves pro jistotu
-        Log.d("TermuxLauncherIME", "Klavesa: $keyCode, Meta: ${event.isMetaPressed}")
+class ShortcutService : AccessibilityService() {
 
-        if (keyCode == KeyEvent.KEYCODE_T && (event.isAltPressed || event.isMetaPressed || event.isCtrlPressed)) {
-            launchTermux()
+    override fun onKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_T && (event.isAltPressed || event.isMetaPressed || event.isCtrlPressed)) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                launchTermux()
+            }
             return true 
         }
-        return super.onKeyDown(keyCode, event)
+        return super.onKeyEvent(event)
     }
 
     private fun launchTermux() {
+        Log.d("TermuxLauncher", "Pokus o spuštění...")
+        
         try {
-            // Tady je ta magie! Místo hledání ho rovnou střílíme na cíl:
-            val intent = Intent()
-            intent.setClassName("com.termux", "com.termux.app.TermuxActivity")
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            
+            // Metoda 1: Oficiální hrubá síla
+            val intent = Intent().apply {
+                component = ComponentName("com.termux", "com.termux.app.TermuxActivity")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            }
             startActivity(intent)
-            Log.d("TermuxLauncherIME", "Termux spuštěn HRUBOU SILOU!")
+            Log.d("TermuxLauncher", "Metoda 1 prošla")
         } catch (e: Exception) {
-            Log.e("TermuxLauncherIME", "Chyba: ${e.message}")
+            Log.e("TermuxLauncher", "Metoda 1 ZABLOKOVÁNA: ${e.message}")
+            
+            // Metoda 2: ZADNÍ VRÁTKA (Příkazový řádek Androidu)
+            try {
+                Runtime.getRuntime().exec("am start -n com.termux/com.termux.app.TermuxActivity")
+                Log.d("TermuxLauncher", "Metoda 2 (AM START) odeslána!")
+            } catch (e2: Exception) {
+                Log.e("TermuxLauncher", "Metoda 2 selhala: ${e2.message}")
+            }
         }
     }
+
+    override fun onAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent) {}
+    override fun onInterrupt() {}
 }
