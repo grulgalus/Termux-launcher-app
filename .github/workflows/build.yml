@@ -3,13 +3,10 @@ name: Android Build CI
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
     - name: Checkout repozitáře
       uses: actions/checkout@v4
@@ -19,13 +16,12 @@ jobs:
       with:
         java-version: '17'
         distribution: 'temurin'
-        cache: gradle
 
-    - name: Oprávnění ke spuštění Gradlu
-      run: chmod +x gradlew
+    - name: Nastavení systémového Gradle
+      uses: gradle/actions/setup-gradle@v3
 
-    - name: Sestavení APK přes Gradle
-      run: ./gradlew assembleDebug
+    - name: Sestavení APK
+      run: gradle assembleDebug
 
     - name: Nahrání APK jako artefaktu
       uses: actions/upload-artifact@v4
