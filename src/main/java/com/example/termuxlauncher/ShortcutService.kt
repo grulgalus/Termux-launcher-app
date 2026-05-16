@@ -27,11 +27,11 @@ class ShortcutService : AccessibilityService() {
     override fun onInterrupt() {}
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
-        // Detekce ALT (nebo OPTION/META na externí klávesnici)
-        val isAlt = event.isAltPressed || event.isMetaPressed
+        // Místo val isAlt = event.isAltPressed
+        val isCtrl = event.isCtrlPressed
 
-        // Zkratka ALT + MEZERNÍK pro Spotlight (jako na Macu)
-        if (event.keyCode == KeyEvent.KEYCODE_SPACE && isAlt) {
+        // A tady to pak zkontroluješ
+        if (event.keyCode == KeyEvent.KEYCODE_SPACE && isCtrl) {
             if (event.action == KeyEvent.ACTION_DOWN) {
                 toggleSpotlight()
             }
