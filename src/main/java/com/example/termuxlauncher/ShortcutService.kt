@@ -1,34 +1,35 @@
 package com.example.termuxlauncher
 
-import android.accessibilityservice.AccessibilityService
+import android.inputmethodservice.InputMethodService
 import android.content.Intent
 import android.view.KeyEvent
-import android.view.accessibility.AccessibilityEvent
+import android.util.Log
 
-class ShortcutService : AccessibilityService() {
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Zde nepotřebujeme nic řešit
-    }
+class ShortcutService : InputMethodService() {
+    
+    // Tato metoda se zavolá při KAŽDÉM stisku jakékoliv klávesy
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        Log.d("TermuxLauncherIME", "Stisknuto: $keyCode, Alt: ${event.isAltPressed}, Meta: ${event.isMetaPressed}, Ctrl: ${event.isCtrlPressed}")
 
-    override fun onInterrupt() {}
-
-    override fun onKeyEvent(event: KeyEvent): Boolean {
-        // Kontrola stisku klávesy 'T'
-        if (event.action == KeyEvent.ACTION_DOWN && event.keyCode == KeyEvent.KEYCODE_T) {
-            // Option klávesa se na Androidu hlásí jako Alt nebo Meta
-            if (event.isAltPressed || event.isMetaPressed) {
-                launchTermux()
-                return true // Zabrání předání klávesy dalším aplikacím
-            }
+        if (keyCode == KeyEvent.KEYCODE_T && (event.isAltPressed || event.isMetaPressed || event.isCtrlPressed)) {
+            launchTermux()
+            return true // Zabrání napsání písmene "t" na obrazovku
         }
-        return super.onKeyEvent(event)
+        
+        // Všechny ostatní klávesy pošleme dál, aby se dalo normálně psát
+        return super.onKeyDown(keyCode, event)
     }
 
     private fun launchTermux() {
-        val intent = packageManager.getLaunchIntentForPackage("com.termux")
-        if (intent != null) {
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(intent)
+        try {
+            val intent = packageManager.getLaunchIntentForPackage("com.termux")
+            if (intent != null) {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                startActivity(intent)
+                Log.d("TermuxLauncherIME", "Termux spuštěn přes klávesnici!")
+            }
+        } catch (e: Exception) {
+            Log.e("TermuxLauncherIME", "Chyba: ${e.message}")
         }
     }
 }

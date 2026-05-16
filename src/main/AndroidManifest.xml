@@ -10,19 +10,19 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
         
-        <!-- Zde je ta nejdůležitější část pro Usnadnění -->
+        <!-- Zde je ta magická změna: Už nejsme Usnadnění, jsme Klávesnice! -->
         <service
             android:name=".ShortcutService"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:permission="android.permission.BIND_INPUT_METHOD"
             android:exported="true"
-            android:label="Termux Launcher">
+            android:label="Termux Zkratka (Klávesnice)">
             <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
+                <action android:name="android.view.InputMethod" />
             </intent-filter>
             
             <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/accessibility_service_config" />
+                android:name="android.view.im"
+                android:resource="@xml/method" />
         </service>
 
     </application>
