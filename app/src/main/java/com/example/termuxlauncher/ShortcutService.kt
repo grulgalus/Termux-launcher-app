@@ -44,7 +44,7 @@ class ShortcutService : AccessibilityService() {
     }
 
     override fun onServiceConnected() {
-        Toast.makeText(this, "Omarchy Menu: Připraveno!", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Omarchy Menu: 10 FPS & Web Search!", Toast.LENGTH_SHORT).show()
         updateAppCache()
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_PACKAGE_ADDED)
@@ -123,7 +123,6 @@ class ShortcutService : AccessibilityService() {
                 isClickable = true 
             }
 
-            // HLAVIČKA ČESKY
             val header = TextView(ctx).apply {
                 text = "Systémové Menu"
                 setTextColor(Color.parseColor("#CDD6F4"))
@@ -141,7 +140,6 @@ class ShortcutService : AccessibilityService() {
                 setPadding(40, 40, 40, 40)
             }
 
-            // VYHLEDÁVÁNÍ ČESKY
             val input = EditText(ctx).apply {
                 hint = "Hledat aplikace..."
                 setTextColor(Color.parseColor("#CDD6F4"))
@@ -167,10 +165,10 @@ class ShortcutService : AccessibilityService() {
             }
             rootOverlay?.addView(menuCard, cardParams)
 
-            // VYKRESLENÍ DEFAULTNÍHO MENU
             showDefaultMenu(resultsContainer)
 
             val mainHandler = Handler(Looper.getMainLooper())
+            var lastSearchRunnable: Runnable? = null // Proměnná pro 10 FPS throttle
 
             input.addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -178,36 +176,57 @@ class ShortcutService : AccessibilityService() {
                 override fun afterTextChanged(s: Editable?) {
                     val query = s.toString().lowercase().trim()
                     
+                    // Zrušíme předchozí překreslení, pokud uživatel píše moc rychle
+                    lastSearchRunnable?.let { mainHandler.removeCallbacks(it) }
+
                     if (query.isEmpty()) {
-                        mainHandler.post { showDefaultMenu(resultsContainer) }
+                        lastSearchRunnable = Runnable { showDefaultMenu(resultsContainer) }
+                        mainHandler.post(lastSearchRunnable!!)
                         return
                     }
 
-                    thread {
-                        val results = mutableListOf<SearchResult>()
-                        for (app in cachedApps) {
-                            if (app.name.lowercase().contains(query)) {
-                                results.add(SearchResult(app.name, "Aplikace: ${app.packageName}") {
-                                    launchFreeform(app.packageName)
-                                })
+                    // Logika vyhledávání zabalená do Runnable pro throttle (10 FPS)
+                    lastSearchRunnable = Runnable {
+                        thread {
+                            val results = mutableListOf<SearchResult>()
+                            for (app in cachedApps) {
+                                if (app.name.lowercase().contains(query)) {
+                                    results.add(SearchResult(app.name, "Aplikace: ${app.packageName}") {
+                                        launchFreeform(app.packageName)
+                                    })
+                                }
                             }
-                        }
-                        
-                        val topResults = results.take(8)
-                        
-                        mainHandler.post {
-                            if (input.text.toString().trim() != query) return@post
                             
-                            resultsContainer.removeAllViews()
-                            for (res in topResults) {
-                                // Při hledání chceme, aby se menu zavřelo po kliknutí
-                                addMenuItem(resultsContainer, res.title, res.subtitle) {
-                                    res.action()
-                                    closeSpotlight()
+                            val topResults = results.take(8)
+                            
+                            mainHandler.post {
+                                if (input.text.toString().trim() != query) return@post
+                                
+                                resultsContainer.removeAllViews()
+
+                                // KDYŽ TO NENAJDE APKU -> FALLBACK NA WEB!
+                                if (topResults.isEmpty()) {
+                                    addMenuItem(resultsContainer, "Hledat na webu", "Vyhledat \"$query\" v prohlížeči") {
+                                        val url = "https://www.google.com/search?q=" + Uri.encode(query)
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        startActivity(intent)
+                                        closeSpotlight()
+                                    }
+                                } else {
+                                    for (res in topResults) {
+                                        addMenuItem(resultsContainer, res.title, res.subtitle) {
+                                            res.action()
+                                            closeSpotlight()
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
+                    
+                    // TADY JE TVÝCH 10 FPS: Spustí se to max jednou za 100ms!
+                    mainHandler.postDelayed(lastSearchRunnable!!, 100)
                 }
             })
 
@@ -225,12 +244,11 @@ class ShortcutService : AccessibilityService() {
         } catch (e: Exception) {}
     }
 
-    // --- ZÁKLADNÍ MENU ---
     private fun showDefaultMenu(container: LinearLayout) {
         container.removeAllViews()
         
         addMenuItem(container, "Nastavení", "Wi-Fi, Bluetooth, Přístupnost...") {
-            showSettingsSubmenu(container) // Tohle otevře to "rozkliknuté" menu!
+            showSettingsSubmenu(container)
         }
         
         addMenuItem(container, "Nainstalovat aplikace", "Otevřít Obchod Play") {
@@ -245,36 +263,23 @@ class ShortcutService : AccessibilityService() {
         }
     }
 
-    // --- POD-MENU PRO NASTAVENÍ ("Když to rozklikneš") ---
     private fun showSettingsSubmenu(container: LinearLayout) {
         container.removeAllViews()
-
-        addMenuItem(container, "◄ Zpět", "Zpět do hlavního menu") {
-            showDefaultMenu(container)
-        }
-
+        addMenuItem(container, "◄ Zpět", "Zpět do hlavního menu") { showDefaultMenu(container) }
         addMenuItem(container, "Wi-Fi", "Připojení k síti") {
-            startActivity(Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            closeSpotlight()
+            startActivity(Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight()
         }
-
         addMenuItem(container, "Bluetooth", "Spárovat zařízení") {
-            startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            closeSpotlight()
+            startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight()
         }
-
         addMenuItem(container, "Přístupnost", "Nastavení usnadnění") {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            closeSpotlight()
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight()
         }
-
         addMenuItem(container, "Všechna nastavení", "Otevřít hlavní systémové nastavení") {
-            startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            closeSpotlight()
+            startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight()
         }
     }
 
-    // VYKRESLOVAČ POLOŽEK
     private fun addMenuItem(container: LinearLayout, title: String, subtitle: String, action: () -> Unit) {
         val ctx = container.context
         val itemLayout = LinearLayout(ctx).apply {
@@ -286,7 +291,6 @@ class ShortcutService : AccessibilityService() {
                 setColor(Color.TRANSPARENT)
                 cornerRadius = 12f
             }
-            // Změna: akce se provede, ale zavření okna si řídí až ta akce sama
             setOnClickListener { action() }
         }
         
