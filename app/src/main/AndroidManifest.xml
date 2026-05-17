@@ -1,29 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.example.termuxlauncher">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- MAGIE: Tímto Androidu lžeme, že apka je stará. Zcela to VYPNE AppsFilter! -->
-    <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="29" />
-
+    <!-- Tohle povolí plovoucí okno -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
-        android:allowBackup="true"
-        android:icon="@mipmap/ic_launcher"
-        android:label="Termux Launcher"
-        android:roundIcon="@mipmap/ic_launcher_round"
-        android:supportsRtl="true"
-        android:theme="@style/Theme.AppCompat.DayNight.NoActionBar">
-        
+        android:label="Termux Spotlight"
+        android:theme="@android:style/Theme.DeviceDefault">
+
         <service
             android:name=".ShortcutService"
+            android:label="Termux Spotlight Service"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-            android:exported="true"
-            android:label="Termux Zkratka">
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
-            
+
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
