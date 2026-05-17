@@ -19,6 +19,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -29,26 +30,21 @@ import kotlin.concurrent.thread
 class ShortcutService : AccessibilityService() {
 
     private var windowManager: WindowManager? = null
-    private var spotlightView: View? = null
+    private var rootOverlay: FrameLayout? = null // Neviditelná vrstva přes celý displej
     private var cachedApps: List<AppItem> = emptyList()
 
     data class SearchResult(val title: String, val subtitle: String, val action: () -> Unit)
     data class AppItem(val name: String, val packageName: String)
 
-    // HLÍDAČ INSTALACÍ: Čeká, až něco nainstaluješ/smažeš a hned to updatne!
     private val packageReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            updateAppCache() // Bleskový update na pozadí
+            updateAppCache()
         }
     }
 
     override fun onServiceConnected() {
-        Toast.makeText(this, "Omarchy Menu načteno (Blesková verze)!", Toast.LENGTH_SHORT).show()
-        
-        // 1. Načteme to jednou po startu
+        Toast.makeText(this, "Omarchy Menu: Připraveno!", Toast.LENGTH_SHORT).show()
         updateAppCache()
-
-        // 2. Zapneme hlídače instalací aplikací (Nežere baterku)
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_PACKAGE_ADDED)
             addAction(Intent.ACTION_PACKAGE_REMOVED)
@@ -80,7 +76,7 @@ class ShortcutService : AccessibilityService() {
         val isShift = event.isShiftPressed
         val isOption = event.isAltPressed || event.isMetaPressed
 
-        if (spotlightView != null && event.keyCode == KeyEvent.KEYCODE_ESCAPE) {
+        if (rootOverlay != null && event.keyCode == KeyEvent.KEYCODE_ESCAPE) {
             if (event.action == KeyEvent.ACTION_DOWN) closeSpotlight()
             return true
         }
@@ -102,7 +98,7 @@ class ShortcutService : AccessibilityService() {
     }
 
     private fun toggleSpotlight() {
-        if (spotlightView != null) {
+        if (rootOverlay != null) {
             closeSpotlight()
             return
         }
@@ -111,61 +107,73 @@ class ShortcutService : AccessibilityService() {
             windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
             val ctx = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
             
-            val layout = LinearLayout(ctx).apply {
+            // 1. NEVIDITELNÁ VRSTVA (Chytá kliknutí vedle)
+            rootOverlay = FrameLayout(ctx).apply {
+                // Slabě ztmavíme zbytek obrazovky, jak to má Linux
+                setBackgroundColor(Color.parseColor("#66000000")) 
+                setOnClickListener { closeSpotlight() } // KLIK MÍMO ZAVŘE MENU
+            }
+
+            // 2. OMARCHY RÁMEČEK (Karta uprostřed)
+            val menuCard = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
                 background = GradientDrawable().apply {
-                    cornerRadius = 16f
-                    setColor(Color.parseColor("#E60F0F14"))
-                    setStroke(4, Color.parseColor("#89B4FA"))
+                    cornerRadius = 24f
+                    setColor(Color.parseColor("#181825")) // Catppuccin tmavá
+                    setStroke(2, Color.parseColor("#313244")) // Šedý okraj
                 }
+                // DŮLEŽITÉ: Aby kliknutí na samotné menu nezavřelo okno!
+                isClickable = true 
+            }
+
+            // HLAVIČKA "System Menu"
+            val header = TextView(ctx).apply {
+                text = "System Menu"
+                setTextColor(Color.parseColor("#CDD6F4")) // Bílý text
+                textSize = 14f
+                setPadding(50, 30, 50, 30)
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#1E1E2E")) // Světlejší hlavička
+                    cornerRadii = floatArrayOf(24f, 24f, 24f, 24f, 0f, 0f, 0f, 0f)
+                }
+            }
+            menuCard.addView(header)
+
+            // Tělo menu
+            val bodyLayout = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
                 setPadding(40, 40, 40, 40)
             }
 
-            val searchPanel = LinearLayout(ctx).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, 0, 0, 20)
-            }
-
-            val prompt = TextView(ctx).apply {
-                text = "> "
-                setTextColor(Color.parseColor("#89B4FA"))
-                textSize = 26f
-                setTypeface(null, android.graphics.Typeface.BOLD)
-                setPadding(0, 0, 10, 0)
-            }
-
+            // VYHLEDÁVACÍ POLE
             val input = EditText(ctx).apply {
-                hint = "Vyhledat aplikaci..."
-                setTextColor(Color.WHITE)
-                setHintTextColor(Color.parseColor("#555555"))
-                textSize = 24f
+                hint = "Search apps or tools..."
+                setTextColor(Color.parseColor("#CDD6F4"))
+                setHintTextColor(Color.parseColor("#585B70"))
+                textSize = 20f
                 isSingleLine = true
-                background = null
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, 
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                )
+                background = null // Žádná čára pod textem
+                setPadding(0, 0, 0, 30)
             }
+            bodyLayout.addView(input)
 
-            searchPanel.addView(prompt)
-            searchPanel.addView(input)
-            layout.addView(searchPanel)
-            
-            val divider = View(ctx).apply {
-                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 2)
-                setBackgroundColor(Color.parseColor("#333333"))
-            }
-            layout.addView(divider)
-
+            // VÝSLEDKY HLEDÁNÍ (v posuvném layoutu)
             val resultsContainer = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(0, 10, 0, 0)
             }
             val scroll = ScrollView(ctx).apply {
                 addView(resultsContainer)
             }
+            bodyLayout.addView(scroll)
+            menuCard.addView(bodyLayout)
 
+            // Umístění menu přesně doprostřed displeje
+            val cardParams = FrameLayout.LayoutParams(1100, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.CENTER
+            }
+            rootOverlay?.addView(menuCard, cardParams)
+
+            // Handler na vyhledávání (okamžitá odezva)
             val mainHandler = Handler(Looper.getMainLooper())
 
             input.addTextChangedListener(object : TextWatcher {
@@ -186,30 +194,33 @@ class ShortcutService : AccessibilityService() {
                             resultsContainer.removeAllViews()
                             for (res in results) {
                                 val itemLayout = LinearLayout(ctx).apply {
-                                    orientation = LinearLayout.VERTICAL
+                                    orientation = LinearLayout.HORIZONTAL
+                                    gravity = Gravity.CENTER_VERTICAL
                                     setPadding(20, 20, 20, 20)
                                     isClickable = true
                                     background = GradientDrawable().apply {
                                         setColor(Color.TRANSPARENT)
-                                        cornerRadius = 8f
+                                        cornerRadius = 12f
                                     }
                                     setOnClickListener { res.action(); closeSpotlight() }
                                 }
                                 
-                                val titleView = TextView(ctx).apply {
-                                    text = res.title
-                                    setTextColor(Color.WHITE)
-                                    textSize = 18f
-                                    setTypeface(null, android.graphics.Typeface.BOLD)
-                                }
-                                val subView = TextView(ctx).apply {
-                                    text = res.subtitle
-                                    setTextColor(Color.parseColor("#A6ADC8"))
-                                    textSize = 12f
+                                // Falešná ikonka (čtvereček jako z obrázku)
+                                val icon = TextView(ctx).apply {
+                                    text = "■ "
+                                    setTextColor(Color.parseColor("#89B4FA")) // Modrá
+                                    textSize = 14f
+                                    setPadding(0, 0, 20, 0)
                                 }
                                 
+                                val titleView = TextView(ctx).apply {
+                                    text = res.title
+                                    setTextColor(Color.parseColor("#CDD6F4"))
+                                    textSize = 18f
+                                }
+                                
+                                itemLayout.addView(icon)
                                 itemLayout.addView(titleView)
-                                itemLayout.addView(subView)
                                 resultsContainer.addView(itemLayout)
                             }
                         }
@@ -217,40 +228,34 @@ class ShortcutService : AccessibilityService() {
                 }
             })
 
-            layout.addView(scroll)
-
+            // Zobrazíme PŘES CELÝ DISPLEJ, aby šlo klikat vedle
             val params = WindowManager.LayoutParams(
-                1200, WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.MATCH_PARENT, 
+                WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
                 PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.CENTER
-            }
+            )
 
-            windowManager?.addView(layout, params)
-            spotlightView = layout
+            windowManager?.addView(rootOverlay, params)
             input.requestFocus()
 
-        } catch (e: Exception) {
-            Toast.makeText(this, "Chyba okna: ${e.message}", Toast.LENGTH_LONG).show()
-        }
+        } catch (e: Exception) {}
     }
 
     private fun performSearch(query: String): List<SearchResult> {
         val results = mutableListOf<SearchResult>()
 
-        if ("nastavení".contains(query) || "settings".contains(query)) {
-            results.add(SearchResult("Nastavení", "Systém") {
-                val intent = Intent(Settings.ACTION_SETTINGS)
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if ("wifi".contains(query) || "nastavení".contains(query)) {
+            results.add(SearchResult("WIFI & Settings", "Systém") {
+                val intent = Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
             })
         }
 
         for (app in cachedApps) {
             if (app.name.lowercase().contains(query)) {
-                results.add(SearchResult(app.name, "Aplikace: ${app.packageName}") {
+                results.add(SearchResult(app.name, "") {
                     launchFreeform(app.packageName)
                 })
             }
@@ -260,9 +265,9 @@ class ShortcutService : AccessibilityService() {
     }
 
     private fun closeSpotlight() {
-        if (spotlightView != null) {
-            windowManager?.removeView(spotlightView)
-            spotlightView = null
+        if (rootOverlay != null) {
+            windowManager?.removeView(rootOverlay)
+            rootOverlay = null
         }
     }
 
