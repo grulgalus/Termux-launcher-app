@@ -44,7 +44,7 @@ class ShortcutService : AccessibilityService() {
     }
 
     override fun onServiceConnected() {
-        Toast.makeText(this, "Omarchy Menu v3: Připraveno!", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Omarchy Menu: Připraveno!", Toast.LENGTH_SHORT).show()
         updateAppCache()
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_PACKAGE_ADDED)
@@ -108,26 +108,24 @@ class ShortcutService : AccessibilityService() {
             windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
             val ctx = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
             
-            // 1. NEVIDITELNÁ VRSTVA (Chytá kliknutí vedle)
             rootOverlay = FrameLayout(ctx).apply {
                 setBackgroundColor(Color.parseColor("#66000000")) 
                 setOnClickListener { closeSpotlight() }
             }
 
-            // 2. OMARCHY RÁMEČEK
             val menuCard = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
                 background = GradientDrawable().apply {
                     cornerRadius = 24f
-                    setColor(Color.parseColor("#181825")) // Catppuccin tmavá
+                    setColor(Color.parseColor("#181825")) 
                     setStroke(2, Color.parseColor("#313244"))
                 }
                 isClickable = true 
             }
 
-            // HLAVIČKA
+            // HLAVIČKA ČESKY
             val header = TextView(ctx).apply {
-                text = "System Menu"
+                text = "Systémové Menu"
                 setTextColor(Color.parseColor("#CDD6F4"))
                 textSize = 14f
                 setPadding(50, 30, 50, 30)
@@ -143,8 +141,9 @@ class ShortcutService : AccessibilityService() {
                 setPadding(40, 40, 40, 40)
             }
 
+            // VYHLEDÁVÁNÍ ČESKY
             val input = EditText(ctx).apply {
-                hint = "Search apps or execute..."
+                hint = "Hledat aplikace..."
                 setTextColor(Color.parseColor("#CDD6F4"))
                 setHintTextColor(Color.parseColor("#585B70"))
                 textSize = 20f
@@ -168,7 +167,7 @@ class ShortcutService : AccessibilityService() {
             }
             rootOverlay?.addView(menuCard, cardParams)
 
-            // VYKRESLENÍ DEFAULTNÍHO MENU (Když není nic napsáno)
+            // VYKRESLENÍ DEFAULTNÍHO MENU
             showDefaultMenu(resultsContainer)
 
             val mainHandler = Handler(Looper.getMainLooper())
@@ -179,18 +178,16 @@ class ShortcutService : AccessibilityService() {
                 override fun afterTextChanged(s: Editable?) {
                     val query = s.toString().lowercase().trim()
                     
-                    // KDYŽ UŽIVATEL SMAŽE TEXT, UKÁŽE SE ZPĚT MENU (Settings, Shortcuts...)
                     if (query.isEmpty()) {
                         mainHandler.post { showDefaultMenu(resultsContainer) }
                         return
                     }
 
-                    // BLESKOVÉ HLEDÁNÍ APLIKACÍ
                     thread {
                         val results = mutableListOf<SearchResult>()
                         for (app in cachedApps) {
                             if (app.name.lowercase().contains(query)) {
-                                results.add(SearchResult(app.name, "App: ${app.packageName}") {
+                                results.add(SearchResult(app.name, "Aplikace: ${app.packageName}") {
                                     launchFreeform(app.packageName)
                                 })
                             }
@@ -203,7 +200,11 @@ class ShortcutService : AccessibilityService() {
                             
                             resultsContainer.removeAllViews()
                             for (res in topResults) {
-                                addMenuItem(resultsContainer, res.title, res.subtitle, res.action)
+                                // Při hledání chceme, aby se menu zavřelo po kliknutí
+                                addMenuItem(resultsContainer, res.title, res.subtitle) {
+                                    res.action()
+                                    closeSpotlight()
+                                }
                             }
                         }
                     }
@@ -224,30 +225,56 @@ class ShortcutService : AccessibilityService() {
         } catch (e: Exception) {}
     }
 
-    // TADY JE TVÉ DEFAULTNÍ MENU
+    // --- ZÁKLADNÍ MENU ---
     private fun showDefaultMenu(container: LinearLayout) {
         container.removeAllViews()
         
-        addMenuItem(container, "Settings", "System settings") {
-            startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        addMenuItem(container, "Nastavení", "Wi-Fi, Bluetooth, Přístupnost...") {
+            showSettingsSubmenu(container) // Tohle otevře to "rozkliknuté" menu!
         }
         
-        addMenuItem(container, "Shortcuts", "Manage keybinds") {
-            Toast.makeText(this, "Tady si časem naprogramuješ Shortcuts", Toast.LENGTH_SHORT).show()
-        }
-        
-        addMenuItem(container, "Install apps", "Open app store") {
+        addMenuItem(container, "Nainstalovat aplikace", "Otevřít Obchod Play") {
             try {
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse("market://search?q="))
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
+                closeSpotlight()
             } catch (e: Exception) {
                 Toast.makeText(this, "Obchod Google Play nebyl nalezen", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
-    // UNIVERZÁLNÍ VYKRESLOVAČ POLOŽEK (S tou modrou čtverečkovou ikonkou)
+    // --- POD-MENU PRO NASTAVENÍ ("Když to rozklikneš") ---
+    private fun showSettingsSubmenu(container: LinearLayout) {
+        container.removeAllViews()
+
+        addMenuItem(container, "◄ Zpět", "Zpět do hlavního menu") {
+            showDefaultMenu(container)
+        }
+
+        addMenuItem(container, "Wi-Fi", "Připojení k síti") {
+            startActivity(Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            closeSpotlight()
+        }
+
+        addMenuItem(container, "Bluetooth", "Spárovat zařízení") {
+            startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            closeSpotlight()
+        }
+
+        addMenuItem(container, "Přístupnost", "Nastavení usnadnění") {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            closeSpotlight()
+        }
+
+        addMenuItem(container, "Všechna nastavení", "Otevřít hlavní systémové nastavení") {
+            startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            closeSpotlight()
+        }
+    }
+
+    // VYKRESLOVAČ POLOŽEK
     private fun addMenuItem(container: LinearLayout, title: String, subtitle: String, action: () -> Unit) {
         val ctx = container.context
         val itemLayout = LinearLayout(ctx).apply {
@@ -259,12 +286,13 @@ class ShortcutService : AccessibilityService() {
                 setColor(Color.TRANSPARENT)
                 cornerRadius = 12f
             }
-            setOnClickListener { action(); closeSpotlight() }
+            // Změna: akce se provede, ale zavření okna si řídí až ta akce sama
+            setOnClickListener { action() }
         }
         
         val icon = TextView(ctx).apply {
             text = "■ "
-            setTextColor(Color.parseColor("#89B4FA")) // Catppuccin Modrá
+            setTextColor(Color.parseColor("#89B4FA")) 
             textSize = 14f
             setPadding(0, 0, 20, 0)
         }
