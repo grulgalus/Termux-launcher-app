@@ -40,7 +40,11 @@ class ShortcutService : AccessibilityService() {
     private var blacklist = mutableSetOf<String>()
     private var activePackage = "" 
 
-    private var isBlacklistMode = false
+    // OCHRANA PŘED BUGEM (STAVY MENU)
+    private enum class MenuState { MAIN, SYS_SETTINGS, SPOT_SETTINGS, BLACKLIST }
+    private var currentState = MenuState.MAIN
+    private var isProgrammaticTextChange = false // Brání vyhledávači, aby bláznil, když mažeme text kódem
+
     private var currentResults = listOf<SearchResult>()
     private var spotlightInput: EditText? = null
     private var resultsContainer: LinearLayout? = null
@@ -59,7 +63,7 @@ class ShortcutService : AccessibilityService() {
         currentFps = prefs.getInt("fps", 10)
         blacklist = prefs.getStringSet("blacklist", mutableSetOf())?.toMutableSet() ?: mutableSetOf()
 
-        Toast.makeText(this, "Omarchy Menu: Systémové i vlastní nastavení!", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Omarchy Menu: Bug opraven!", Toast.LENGTH_SHORT).show()
         updateAppCache()
 
         val filter = IntentFilter().apply {
@@ -130,13 +134,19 @@ class ShortcutService : AccessibilityService() {
         return super.onKeyEvent(event)
     }
 
+    // Bezpečné smazání textu bez vyvolání chybného překreslení
+    private fun changeTextSafely(text: String) {
+        isProgrammaticTextChange = true
+        spotlightInput?.setText(text)
+        spotlightInput?.setSelection(text.length)
+        isProgrammaticTextChange = false
+    }
+
     private fun toggleSpotlight() {
         if (rootOverlay != null) {
             closeSpotlight()
             return
         }
-
-        isBlacklistMode = false
 
         try {
             windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -199,7 +209,7 @@ class ShortcutService : AccessibilityService() {
 
             spotlightInput?.setOnKeyListener { _, keyCode, keyEvent ->
                 if (keyCode == KeyEvent.KEYCODE_ENTER && keyEvent.action == KeyEvent.ACTION_DOWN) {
-                    if (currentResults.isNotEmpty() && !isBlacklistMode) {
+                    if (currentResults.isNotEmpty() && currentState != MenuState.BLACKLIST) {
                         currentResults[0].action() 
                         closeSpotlight()
                     }
@@ -215,22 +225,32 @@ class ShortcutService : AccessibilityService() {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
                 override fun afterTextChanged(s: Editable?) {
+                    // POKUD PŘEPISUJEME KÓDEM, ZASTAVÍME TENTO BLOK!
+                    if (isProgrammaticTextChange) return
+
                     val query = s.toString().lowercase().trim()
                     lastSearchRunnable?.let { mainHandler.removeCallbacks(it) }
 
                     val delayMs = 1000L / currentFps
 
                     lastSearchRunnable = Runnable {
-                        if (isBlacklistMode) {
+                        if (currentState == MenuState.BLACKLIST) {
                             renderBlacklist(query)
                             return@Runnable
                         }
 
+                        // KDYŽ SMAŽEŠ TEXT, VRÁTÍ TĚ TO PŘESNĚ TAM, KDE JSI BYL!
                         if (query.isEmpty()) {
-                            showDefaultMenu()
+                            when (currentState) {
+                                MenuState.MAIN -> showDefaultMenu()
+                                MenuState.SYS_SETTINGS -> showSettingsSubmenu()
+                                MenuState.SPOT_SETTINGS -> showCustomSettings()
+                                else -> showDefaultMenu()
+                            }
                             return@Runnable
                         }
 
+                        // Vlastní hledání aplikací (jen pokud zrovna nespravuješ blacklist)
                         thread {
                             val results = mutableListOf<SearchResult>()
                             for (app in cachedApps) {
@@ -286,6 +306,7 @@ class ShortcutService : AccessibilityService() {
 
     // --- ZÁKLADNÍ MENU ---
     private fun showDefaultMenu() {
+        currentState = MenuState.MAIN
         currentResults = emptyList()
         resultsContainer?.removeAllViews()
         
@@ -307,8 +328,8 @@ class ShortcutService : AccessibilityService() {
 
     // --- ANDROID NASTAVENÍ PODMENU ---
     private fun showSettingsSubmenu() {
-        isBlacklistMode = false
-        spotlightInput?.setText("")
+        currentState = MenuState.SYS_SETTINGS
+        changeTextSafely("")
         spotlightInput?.hint = "Hledat aplikace..."
         resultsContainer?.removeAllViews()
 
@@ -330,8 +351,8 @@ class ShortcutService : AccessibilityService() {
 
     // --- TVOJE VLASTNÍ NASTAVENÍ SPOTLIGHTU ---
     private fun showCustomSettings() {
-        isBlacklistMode = false
-        spotlightInput?.setText("")
+        currentState = MenuState.SPOT_SETTINGS
+        changeTextSafely("")
         spotlightInput?.hint = "Hledat aplikace..."
         resultsContainer?.removeAllViews()
 
@@ -348,7 +369,8 @@ class ShortcutService : AccessibilityService() {
         }
 
         addMenuItem("Zakázané aplikace (Blacklist)", "Vybrat, kde se menu neotevře", "🚫 ", "#F38BA8") {
-            isBlacklistMode = true
+            currentState = MenuState.BLACKLIST
+            changeTextSafely("")
             spotlightInput?.hint = "Hledat aplikaci k zakázání..."
             renderBlacklist("")
         }
