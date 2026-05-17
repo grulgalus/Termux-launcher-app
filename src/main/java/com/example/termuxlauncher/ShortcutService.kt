@@ -25,17 +25,14 @@ class ShortcutService : AccessibilityService() {
     }
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
-        // Kontrolujeme, jestli je zmáčknutý SHIFT
         val isShift = event.isShiftPressed
 
-        // Zavření okna pomocí klávesy ESC
         if (spotlightView != null && event.keyCode == KeyEvent.KEYCODE_ESCAPE) {
             if (event.action == KeyEvent.ACTION_DOWN) closeSpotlight()
             return true
         }
 
-        // ZMĚNĚNO NA: Shift + Mezerník
-        if (event.keyCode == KeyEvent.KEYCODE_SPACE && isShift) {
+        if (event.keyCode == KeyEvent.KEYCODE_ENTER && isShift) {
             if (event.action == KeyEvent.ACTION_DOWN) toggleSpotlight()
             return true
         }
