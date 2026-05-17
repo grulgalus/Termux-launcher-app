@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
@@ -34,6 +35,16 @@ class ShortcutService : AccessibilityService() {
     private var rootOverlay: FrameLayout? = null
     private var cachedApps: List<AppItem> = emptyList()
 
+    private lateinit var prefs: SharedPreferences
+    private var currentFps = 10
+    private var blacklist = mutableSetOf<String>()
+    private var activePackage = "" 
+
+    private var isBlacklistMode = false
+    private var currentResults = listOf<SearchResult>()
+    private var spotlightInput: EditText? = null
+    private var resultsContainer: LinearLayout? = null
+
     data class SearchResult(val title: String, val subtitle: String, val action: () -> Unit)
     data class AppItem(val name: String, val packageName: String)
 
@@ -44,8 +55,13 @@ class ShortcutService : AccessibilityService() {
     }
 
     override fun onServiceConnected() {
-        Toast.makeText(this, "Omarchy Menu: 10 FPS & Web Search!", Toast.LENGTH_SHORT).show()
+        prefs = getSharedPreferences("SpotlightPrefs", Context.MODE_PRIVATE)
+        currentFps = prefs.getInt("fps", 10)
+        blacklist = prefs.getStringSet("blacklist", mutableSetOf())?.toMutableSet() ?: mutableSetOf()
+
+        Toast.makeText(this, "Omarchy Menu: Systémové i vlastní nastavení!", Toast.LENGTH_SHORT).show()
         updateAppCache()
+
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_PACKAGE_ADDED)
             addAction(Intent.ACTION_PACKAGE_REMOVED)
@@ -59,6 +75,14 @@ class ShortcutService : AccessibilityService() {
         try { unregisterReceiver(packageReceiver) } catch (e: Exception) {}
     }
 
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            event.packageName?.let { activePackage = it.toString() }
+        }
+    }
+
+    override fun onInterrupt() {}
+
     private fun updateAppCache() {
         thread {
             val apps = packageManager.getInstalledApplications(0)
@@ -69,7 +93,7 @@ class ShortcutService : AccessibilityService() {
                     temp.add(AppItem(appName, app.packageName))
                 }
             }
-            cachedApps = temp
+            cachedApps = temp.sortedBy { it.name.lowercase() }
         }
     }
 
@@ -83,14 +107,22 @@ class ShortcutService : AccessibilityService() {
         }
 
         if (event.keyCode == KeyEvent.KEYCODE_ENTER && isShift) {
-            if (event.action == KeyEvent.ACTION_DOWN) toggleSpotlight()
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                if (activePackage in blacklist) {
+                    Toast.makeText(this, "Spotlight je zde zakázán!", Toast.LENGTH_SHORT).show()
+                } else {
+                    toggleSpotlight()
+                }
+            }
             return true
         }
 
         if (event.keyCode == KeyEvent.KEYCODE_T && isOption) {
             if (event.action == KeyEvent.ACTION_DOWN) {
-                launchFreeform("com.termux")
-                closeSpotlight()
+                if (activePackage !in blacklist) {
+                    launchFreeform("com.termux")
+                    closeSpotlight()
+                }
             }
             return true
         }
@@ -103,6 +135,8 @@ class ShortcutService : AccessibilityService() {
             closeSpotlight()
             return
         }
+
+        isBlacklistMode = false
 
         try {
             windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -124,7 +158,7 @@ class ShortcutService : AccessibilityService() {
             }
 
             val header = TextView(ctx).apply {
-                text = "Systémové Menu"
+                text = "Omarchy Spotlight"
                 setTextColor(Color.parseColor("#CDD6F4"))
                 textSize = 14f
                 setPadding(50, 30, 50, 30)
@@ -140,7 +174,7 @@ class ShortcutService : AccessibilityService() {
                 setPadding(40, 40, 40, 40)
             }
 
-            val input = EditText(ctx).apply {
+            spotlightInput = EditText(ctx).apply {
                 hint = "Hledat aplikace..."
                 setTextColor(Color.parseColor("#CDD6F4"))
                 setHintTextColor(Color.parseColor("#585B70"))
@@ -149,14 +183,10 @@ class ShortcutService : AccessibilityService() {
                 background = null
                 setPadding(0, 0, 0, 30)
             }
-            bodyLayout.addView(input)
+            bodyLayout.addView(spotlightInput)
 
-            val resultsContainer = LinearLayout(ctx).apply {
-                orientation = LinearLayout.VERTICAL
-            }
-            val scroll = ScrollView(ctx).apply {
-                addView(resultsContainer)
-            }
+            resultsContainer = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+            val scroll = ScrollView(ctx).apply { addView(resultsContainer) }
             bodyLayout.addView(scroll)
             menuCard.addView(bodyLayout)
 
@@ -165,28 +195,42 @@ class ShortcutService : AccessibilityService() {
             }
             rootOverlay?.addView(menuCard, cardParams)
 
-            showDefaultMenu(resultsContainer)
+            showDefaultMenu()
+
+            spotlightInput?.setOnKeyListener { _, keyCode, keyEvent ->
+                if (keyCode == KeyEvent.KEYCODE_ENTER && keyEvent.action == KeyEvent.ACTION_DOWN) {
+                    if (currentResults.isNotEmpty() && !isBlacklistMode) {
+                        currentResults[0].action() 
+                        closeSpotlight()
+                    }
+                    return@setOnKeyListener true
+                }
+                false
+            }
 
             val mainHandler = Handler(Looper.getMainLooper())
-            var lastSearchRunnable: Runnable? = null // Proměnná pro 10 FPS throttle
+            var lastSearchRunnable: Runnable? = null 
 
-            input.addTextChangedListener(object : TextWatcher {
+            spotlightInput?.addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
                 override fun afterTextChanged(s: Editable?) {
                     val query = s.toString().lowercase().trim()
-                    
-                    // Zrušíme předchozí překreslení, pokud uživatel píše moc rychle
                     lastSearchRunnable?.let { mainHandler.removeCallbacks(it) }
 
-                    if (query.isEmpty()) {
-                        lastSearchRunnable = Runnable { showDefaultMenu(resultsContainer) }
-                        mainHandler.post(lastSearchRunnable!!)
-                        return
-                    }
+                    val delayMs = 1000L / currentFps
 
-                    // Logika vyhledávání zabalená do Runnable pro throttle (10 FPS)
                     lastSearchRunnable = Runnable {
+                        if (isBlacklistMode) {
+                            renderBlacklist(query)
+                            return@Runnable
+                        }
+
+                        if (query.isEmpty()) {
+                            showDefaultMenu()
+                            return@Runnable
+                        }
+
                         thread {
                             val results = mutableListOf<SearchResult>()
                             for (app in cachedApps) {
@@ -200,33 +244,29 @@ class ShortcutService : AccessibilityService() {
                             val topResults = results.take(8)
                             
                             mainHandler.post {
-                                if (input.text.toString().trim() != query) return@post
+                                if (spotlightInput?.text.toString().trim() != query) return@post
                                 
-                                resultsContainer.removeAllViews()
+                                currentResults = topResults 
+                                resultsContainer?.removeAllViews()
 
-                                // KDYŽ TO NENAJDE APKU -> FALLBACK NA WEB!
                                 if (topResults.isEmpty()) {
-                                    addMenuItem(resultsContainer, "Hledat na webu", "Vyhledat \"$query\" v prohlížeči") {
+                                    val fallbackAction = {
                                         val url = "https://www.google.com/search?q=" + Uri.encode(query)
-                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                         startActivity(intent)
                                         closeSpotlight()
                                     }
+                                    currentResults = listOf(SearchResult("Hledat na webu", "", fallbackAction))
+                                    addMenuItem("Hledat na webu", "Vyhledat \"$query\" v prohlížeči", "■ ", "#89B4FA", fallbackAction)
                                 } else {
                                     for (res in topResults) {
-                                        addMenuItem(resultsContainer, res.title, res.subtitle) {
-                                            res.action()
-                                            closeSpotlight()
-                                        }
+                                        addMenuItem(res.title, res.subtitle, "■ ", "#89B4FA") { res.action(); closeSpotlight() }
                                     }
                                 }
                             }
                         }
                     }
-                    
-                    // TADY JE TVÝCH 10 FPS: Spustí se to max jednou za 100ms!
-                    mainHandler.postDelayed(lastSearchRunnable!!, 100)
+                    mainHandler.postDelayed(lastSearchRunnable!!, delayMs)
                 }
             })
 
@@ -239,49 +279,108 @@ class ShortcutService : AccessibilityService() {
             )
 
             windowManager?.addView(rootOverlay, params)
-            input.requestFocus()
+            spotlightInput?.requestFocus()
 
         } catch (e: Exception) {}
     }
 
-    private fun showDefaultMenu(container: LinearLayout) {
-        container.removeAllViews()
+    // --- ZÁKLADNÍ MENU ---
+    private fun showDefaultMenu() {
+        currentResults = emptyList()
+        resultsContainer?.removeAllViews()
         
-        addMenuItem(container, "Nastavení", "Wi-Fi, Bluetooth, Přístupnost...") {
-            showSettingsSubmenu(container)
+        addMenuItem("Nastavení systému", "Wi-Fi, Bluetooth, Přístupnost...", "⚙ ", "#89B4FA") {
+            showSettingsSubmenu()
         }
         
-        addMenuItem(container, "Nainstalovat aplikace", "Otevřít Obchod Play") {
+        addMenuItem("Nastavení Spotlightu", "Rychlost (FPS) a Zakázané aplikace", "🛠 ", "#F9E2AF") {
+            showCustomSettings()
+        }
+        
+        addMenuItem("Nainstalovat aplikace", "Otevřít Obchod Play", "■ ", "#A6E3A1") {
             try {
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("market://search?q="))
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                startActivity(intent)
-                closeSpotlight()
-            } catch (e: Exception) {
-                Toast.makeText(this, "Obchod Google Play nebyl nalezen", Toast.LENGTH_SHORT).show()
-            }
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("market://search?q=")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent); closeSpotlight()
+            } catch (e: Exception) {}
         }
     }
 
-    private fun showSettingsSubmenu(container: LinearLayout) {
-        container.removeAllViews()
-        addMenuItem(container, "◄ Zpět", "Zpět do hlavního menu") { showDefaultMenu(container) }
-        addMenuItem(container, "Wi-Fi", "Připojení k síti") {
+    // --- ANDROID NASTAVENÍ PODMENU ---
+    private fun showSettingsSubmenu() {
+        isBlacklistMode = false
+        spotlightInput?.setText("")
+        spotlightInput?.hint = "Hledat aplikace..."
+        resultsContainer?.removeAllViews()
+
+        addMenuItem("◄ Zpět", "Zpět do hlavního menu", "■ ", "#CDD6F4") { showDefaultMenu() }
+        
+        addMenuItem("Wi-Fi", "Připojení k síti", "■ ", "#89B4FA") {
             startActivity(Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight()
         }
-        addMenuItem(container, "Bluetooth", "Spárovat zařízení") {
+        addMenuItem("Bluetooth", "Spárovat zařízení", "■ ", "#89B4FA") {
             startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight()
         }
-        addMenuItem(container, "Přístupnost", "Nastavení usnadnění") {
+        addMenuItem("Přístupnost", "Nastavení usnadnění", "■ ", "#89B4FA") {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight()
         }
-        addMenuItem(container, "Všechna nastavení", "Otevřít hlavní systémové nastavení") {
+        addMenuItem("Všechna nastavení", "Otevřít hlavní systémové nastavení", "■ ", "#89B4FA") {
             startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight()
         }
     }
 
-    private fun addMenuItem(container: LinearLayout, title: String, subtitle: String, action: () -> Unit) {
-        val ctx = container.context
+    // --- TVOJE VLASTNÍ NASTAVENÍ SPOTLIGHTU ---
+    private fun showCustomSettings() {
+        isBlacklistMode = false
+        spotlightInput?.setText("")
+        spotlightInput?.hint = "Hledat aplikace..."
+        resultsContainer?.removeAllViews()
+
+        addMenuItem("◄ Zpět", "Zpět do hlavního menu", "■ ", "#CDD6F4") { showDefaultMenu() }
+        
+        addMenuItem("Rychlost překreslování", "Aktuálně: $currentFps FPS (Klikni pro změnu)", "⚡ ", "#A6E3A1") {
+            currentFps = when (currentFps) {
+                10 -> 30
+                30 -> 60
+                else -> 10
+            }
+            prefs.edit().putInt("fps", currentFps).apply()
+            showCustomSettings()
+        }
+
+        addMenuItem("Zakázané aplikace (Blacklist)", "Vybrat, kde se menu neotevře", "🚫 ", "#F38BA8") {
+            isBlacklistMode = true
+            spotlightInput?.hint = "Hledat aplikaci k zakázání..."
+            renderBlacklist("")
+        }
+    }
+
+    // --- BLACKLIST MENU ---
+    private fun renderBlacklist(query: String) {
+        val mainHandler = Handler(Looper.getMainLooper())
+        thread {
+            val filtered = cachedApps.filter { it.name.lowercase().contains(query) }.take(15)
+            mainHandler.post {
+                resultsContainer?.removeAllViews()
+                addMenuItem("◄ Zpět", "Zpět do nastavení", "■ ", "#CDD6F4") { showCustomSettings() }
+                
+                for (app in filtered) {
+                    val isBlocked = app.packageName in blacklist
+                    val icon = if (isBlocked) "☒ " else "☐ "
+                    val color = if (isBlocked) "#F38BA8" else "#A6E3A1" 
+                    
+                    addMenuItem(app.name, app.packageName, icon, color) {
+                        if (isBlocked) blacklist.remove(app.packageName) else blacklist.add(app.packageName)
+                        prefs.edit().putStringSet("blacklist", blacklist).apply()
+                        renderBlacklist(query) 
+                    }
+                }
+            }
+        }
+    }
+
+    // VYKRESLOVAČ POLOŽEK
+    private fun addMenuItem(title: String, subtitle: String, iconText: String, iconColor: String, action: () -> Unit) {
+        val ctx = resultsContainer?.context ?: return
         val itemLayout = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -295,16 +394,13 @@ class ShortcutService : AccessibilityService() {
         }
         
         val icon = TextView(ctx).apply {
-            text = "■ "
-            setTextColor(Color.parseColor("#89B4FA")) 
-            textSize = 14f
+            text = iconText
+            setTextColor(Color.parseColor(iconColor)) 
+            textSize = 16f
             setPadding(0, 0, 20, 0)
         }
         
-        val textLayout = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        
+        val textLayout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         val titleView = TextView(ctx).apply {
             text = title
             setTextColor(Color.parseColor("#CDD6F4"))
@@ -323,7 +419,7 @@ class ShortcutService : AccessibilityService() {
         
         itemLayout.addView(icon)
         itemLayout.addView(textLayout)
-        container.addView(itemLayout)
+        resultsContainer?.addView(itemLayout)
     }
 
     private fun closeSpotlight() {
@@ -347,7 +443,4 @@ class ShortcutService : AccessibilityService() {
             }
         } catch (e: Exception) {}
     }
-
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
-    override fun onInterrupt() {}
 }
