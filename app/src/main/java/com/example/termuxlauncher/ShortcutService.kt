@@ -1,7 +1,10 @@
 package com.example.termuxlauncher
 
 import android.accessibilityservice.AccessibilityService
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
@@ -21,7 +24,6 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import android.view.ContextThemeWrapper
-import java.io.File
 import kotlin.concurrent.thread
 
 class ShortcutService : AccessibilityService() {
@@ -33,15 +35,38 @@ class ShortcutService : AccessibilityService() {
     data class SearchResult(val title: String, val subtitle: String, val action: () -> Unit)
     data class AppItem(val name: String, val packageName: String)
 
+    // HLÍDAČ INSTALACÍ: Čeká, až něco nainstaluješ/smažeš a hned to updatne!
+    private val packageReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            updateAppCache() // Bleskový update na pozadí
+        }
+    }
+
     override fun onServiceConnected() {
-        Toast.makeText(this, "Super Spotlight připraven!", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Omarchy Menu načteno (Blesková verze)!", Toast.LENGTH_SHORT).show()
         
-        // Magie č.1: Načteme seznam všech aplikací jen JEDNOU a NA POZADÍ!
+        // 1. Načteme to jednou po startu
+        updateAppCache()
+
+        // 2. Zapneme hlídače instalací aplikací (Nežere baterku)
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addDataScheme("package")
+        }
+        registerReceiver(packageReceiver, filter)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try { unregisterReceiver(packageReceiver) } catch (e: Exception) {}
+    }
+
+    private fun updateAppCache() {
         thread {
             val apps = packageManager.getInstalledApplications(0)
             val temp = mutableListOf<AppItem>()
             for (app in apps) {
-                // Přidáme jen ty aplikace, které jdou reálně spustit
                 if (packageManager.getLaunchIntentForPackage(app.packageName) != null) {
                     val appName = app.loadLabel(packageManager).toString()
                     temp.add(AppItem(appName, app.packageName))
@@ -89,30 +114,58 @@ class ShortcutService : AccessibilityService() {
             val layout = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
                 background = GradientDrawable().apply {
-                    cornerRadius = 40f
-                    setColor(Color.parseColor("#F2181818"))
+                    cornerRadius = 16f
+                    setColor(Color.parseColor("#E60F0F14"))
+                    setStroke(4, Color.parseColor("#89B4FA"))
                 }
-                setPadding(50, 50, 50, 50)
+                setPadding(40, 40, 40, 40)
+            }
+
+            val searchPanel = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, 20)
+            }
+
+            val prompt = TextView(ctx).apply {
+                text = "> "
+                setTextColor(Color.parseColor("#89B4FA"))
+                textSize = 26f
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setPadding(0, 0, 10, 0)
             }
 
             val input = EditText(ctx).apply {
-                hint = "Hledat aplikace, soubory, nastavení..."
+                hint = "Vyhledat aplikaci..."
                 setTextColor(Color.WHITE)
-                setHintTextColor(Color.parseColor("#888888"))
-                textSize = 22f
+                setHintTextColor(Color.parseColor("#555555"))
+                textSize = 24f
                 isSingleLine = true
                 background = null
-                setPadding(0, 0, 0, 30)
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, 
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
             }
+
+            searchPanel.addView(prompt)
+            searchPanel.addView(input)
+            layout.addView(searchPanel)
+            
+            val divider = View(ctx).apply {
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 2)
+                setBackgroundColor(Color.parseColor("#333333"))
+            }
+            layout.addView(divider)
 
             val resultsContainer = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
+                setPadding(0, 10, 0, 0)
             }
             val scroll = ScrollView(ctx).apply {
                 addView(resultsContainer)
             }
 
-            // Handler pro vracení výsledků z vlákna zpět do UI
             val mainHandler = Handler(Looper.getMainLooper())
 
             input.addTextChangedListener(object : TextWatcher {
@@ -120,27 +173,26 @@ class ShortcutService : AccessibilityService() {
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
                 override fun afterTextChanged(s: Editable?) {
                     val query = s.toString().lowercase().trim()
-                    
                     if (query.isEmpty()) {
                         resultsContainer.removeAllViews()
                         return
                     }
 
-                    // Magie č.2: Samotné vyhledávání počítáme na pozadí, abychom nelagovali klávesnici
                     thread {
                         val results = performSearch(query)
-                        
-                        // Zpět do hlavního vlákna pro vykreslení
                         mainHandler.post {
-                            // Ještě jednou zkontrolujeme, jestli text uživatel nesmazal
                             if (input.text.toString().trim() != query) return@post
                             
                             resultsContainer.removeAllViews()
                             for (res in results) {
                                 val itemLayout = LinearLayout(ctx).apply {
                                     orientation = LinearLayout.VERTICAL
-                                    setPadding(0, 25, 0, 25)
+                                    setPadding(20, 20, 20, 20)
                                     isClickable = true
+                                    background = GradientDrawable().apply {
+                                        setColor(Color.TRANSPARENT)
+                                        cornerRadius = 8f
+                                    }
                                     setOnClickListener { res.action(); closeSpotlight() }
                                 }
                                 
@@ -152,7 +204,7 @@ class ShortcutService : AccessibilityService() {
                                 }
                                 val subView = TextView(ctx).apply {
                                     text = res.subtitle
-                                    setTextColor(Color.parseColor("#AAAAAA"))
+                                    setTextColor(Color.parseColor("#A6ADC8"))
                                     textSize = 12f
                                 }
                                 
@@ -165,24 +217,15 @@ class ShortcutService : AccessibilityService() {
                 }
             })
 
-            layout.addView(input)
-            
-            val divider = View(ctx).apply {
-                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 2)
-                setBackgroundColor(Color.parseColor("#444444"))
-                setPadding(0, 10, 0, 10)
-            }
-            layout.addView(divider)
             layout.addView(scroll)
 
             val params = WindowManager.LayoutParams(
-                1000, WindowManager.LayoutParams.WRAP_CONTENT,
+                1200, WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
                 PixelFormat.TRANSLUCENT
             ).apply {
-                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                y = 200
+                gravity = Gravity.CENTER
             }
 
             windowManager?.addView(layout, params)
@@ -197,15 +240,14 @@ class ShortcutService : AccessibilityService() {
     private fun performSearch(query: String): List<SearchResult> {
         val results = mutableListOf<SearchResult>()
 
-        if ("nastaveni".contains(query) || "settings".contains(query)) {
-            results.add(SearchResult("Nastavení (Settings)", "Systém") {
+        if ("nastavení".contains(query) || "settings".contains(query)) {
+            results.add(SearchResult("Nastavení", "Systém") {
                 val intent = Intent(Settings.ACTION_SETTINGS)
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
             })
         }
 
-        // Bleskové hledání v paměti cache (názvy aplikací)
         for (app in cachedApps) {
             if (app.name.lowercase().contains(query)) {
                 results.add(SearchResult(app.name, "Aplikace: ${app.packageName}") {
@@ -214,20 +256,7 @@ class ShortcutService : AccessibilityService() {
             }
         }
 
-        // Hledání souborů
-        try {
-            val sdcard = File("/sdcard/")
-            sdcard.listFiles()?.forEach { file ->
-                if (file.name.lowercase().contains(query)) {
-                    val type = if (file.isDirectory) "Složka" else "Soubor"
-                    results.add(SearchResult(file.name, "$type v ${file.absolutePath}") {
-                        Toast.makeText(this, "Nalezeno: ${file.absolutePath}", Toast.LENGTH_LONG).show()
-                    })
-                }
-            }
-        } catch (e: Exception) {}
-
-        return results.take(8)
+        return results.take(10)
     }
 
     private fun closeSpotlight() {
