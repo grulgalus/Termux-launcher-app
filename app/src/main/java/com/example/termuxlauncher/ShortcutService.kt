@@ -8,8 +8,11 @@ import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.BatteryManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -22,8 +25,10 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.TextClock
 import android.widget.TextView
 import android.widget.Toast
 import android.view.ContextThemeWrapper
@@ -40,17 +45,18 @@ class ShortcutService : AccessibilityService() {
     private var blacklist = mutableSetOf<String>()
     private var activePackage = "" 
 
-    // OCHRANA PŘED BUGEM (STAVY MENU)
     private enum class MenuState { MAIN, SYS_SETTINGS, SPOT_SETTINGS, BLACKLIST }
     private var currentState = MenuState.MAIN
-    private var isProgrammaticTextChange = false // Brání vyhledávači, aby bláznil, když mažeme text kódem
+    private var isProgrammaticTextChange = false 
 
     private var currentResults = listOf<SearchResult>()
     private var spotlightInput: EditText? = null
     private var resultsContainer: LinearLayout? = null
+    private var widgetsContainer: LinearLayout? = null
 
-    data class SearchResult(val title: String, val subtitle: String, val action: () -> Unit)
-    data class AppItem(val name: String, val packageName: String)
+    // APP ITEM TEĎ OBSAHUJE I SKUTEČNOU IKONU APLIKACE!
+    data class SearchResult(val title: String, val subtitle: String, val icon: Drawable?, val emoji: String, val action: () -> Unit)
+    data class AppItem(val name: String, val packageName: String, val icon: Drawable?)
 
     private val packageReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -59,11 +65,11 @@ class ShortcutService : AccessibilityService() {
     }
 
     override fun onServiceConnected() {
-        prefs = getSharedPreferences("SpotlightPrefs", Context.MODE_PRIVATE)
-        currentFps = prefs.getInt("fps", 10)
+        prefs = getSharedPreferences("MacSpotlightPrefs", Context.MODE_PRIVATE)
+        currentFps = prefs.getInt("fps", 30)
         blacklist = prefs.getStringSet("blacklist", mutableSetOf())?.toMutableSet() ?: mutableSetOf()
 
-        Toast.makeText(this, "Omarchy Menu: Bug opraven!", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "MAC-LIKE Spotlight s ikonami načten!", Toast.LENGTH_SHORT).show()
         updateAppCache()
 
         val filter = IntentFilter().apply {
@@ -94,7 +100,8 @@ class ShortcutService : AccessibilityService() {
             for (app in apps) {
                 if (packageManager.getLaunchIntentForPackage(app.packageName) != null) {
                     val appName = app.loadLabel(packageManager).toString()
-                    temp.add(AppItem(appName, app.packageName))
+                    val icon = app.loadIcon(packageManager) // Načteme skutečnou ikonu z Androidu
+                    temp.add(AppItem(appName, app.packageName, icon))
                 }
             }
             cachedApps = temp.sortedBy { it.name.lowercase() }
@@ -113,7 +120,7 @@ class ShortcutService : AccessibilityService() {
         if (event.keyCode == KeyEvent.KEYCODE_ENTER && isShift) {
             if (event.action == KeyEvent.ACTION_DOWN) {
                 if (activePackage in blacklist) {
-                    Toast.makeText(this, "Spotlight je zde zakázán!", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "MAC-LIKE Spotlight zakázán v této aplikaci!", Toast.LENGTH_SHORT).show()
                 } else {
                     toggleSpotlight()
                 }
@@ -134,7 +141,6 @@ class ShortcutService : AccessibilityService() {
         return super.onKeyEvent(event)
     }
 
-    // Bezpečné smazání textu bez vyvolání chybného překreslení
     private fun changeTextSafely(text: String) {
         isProgrammaticTextChange = true
         spotlightInput?.setText(text)
@@ -153,54 +159,129 @@ class ShortcutService : AccessibilityService() {
             val ctx = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
             
             rootOverlay = FrameLayout(ctx).apply {
-                setBackgroundColor(Color.parseColor("#66000000")) 
+                setBackgroundColor(Color.parseColor("#40000000")) 
                 setOnClickListener { closeSpotlight() }
             }
 
             val menuCard = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
                 background = GradientDrawable().apply {
-                    cornerRadius = 24f
-                    setColor(Color.parseColor("#181825")) 
-                    setStroke(2, Color.parseColor("#313244"))
+                    cornerRadius = 40f 
+                    setColor(Color.parseColor("#E61C1C1E")) 
+                    setStroke(2, Color.parseColor("#33FFFFFF")) 
                 }
                 isClickable = true 
+                setPadding(50, 50, 50, 50)
             }
 
-            val header = TextView(ctx).apply {
-                text = "Omarchy Spotlight"
-                setTextColor(Color.parseColor("#CDD6F4"))
-                textSize = 14f
-                setPadding(50, 30, 50, 30)
-                background = GradientDrawable().apply {
-                    setColor(Color.parseColor("#1E1E2E"))
-                    cornerRadii = floatArrayOf(24f, 24f, 24f, 24f, 0f, 0f, 0f, 0f)
-                }
+            // --- MAC WIDGETY ---
+            widgetsContainer = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                weightSum = 2f
+                setPadding(0, 0, 0, 40)
             }
-            menuCard.addView(header)
 
-            val bodyLayout = LinearLayout(ctx).apply {
+            val clockWidget = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(40, 40, 40, 40)
+                gravity = Gravity.CENTER
+                background = GradientDrawable().apply {
+                    cornerRadius = 32f
+                    setColor(Color.parseColor("#26FFFFFF"))
+                }
+                layoutParams = LinearLayout.LayoutParams(0, 250, 1f).apply { setMargins(0, 0, 20, 0) }
             }
+            val timeText = TextClock(ctx).apply {
+                format12Hour = "HH:mm"
+                format24Hour = "HH:mm"
+                textSize = 32f
+                setTextColor(Color.WHITE)
+                setTypeface(null, android.graphics.Typeface.BOLD)
+            }
+            val dateText = TextClock(ctx).apply {
+                format12Hour = "EEEE, dd. MM."
+                format24Hour = "EEEE, dd. MM."
+                textSize = 14f
+                setTextColor(Color.parseColor("#A0A0A0"))
+            }
+            clockWidget.addView(timeText)
+            clockWidget.addView(dateText)
+
+            val batteryWidget = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                background = GradientDrawable().apply {
+                    cornerRadius = 32f
+                    setColor(Color.parseColor("#26FFFFFF"))
+                }
+                layoutParams = LinearLayout.LayoutParams(0, 250, 1f).apply { setMargins(20, 0, 0, 0) }
+            }
+            
+            val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
+            val batLevel = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            
+            val batIcon = TextView(ctx).apply {
+                text = if (batLevel > 20) "🔋 $batLevel %" else "🪫 $batLevel %"
+                textSize = 24f
+                setTextColor(if (batLevel > 20) Color.parseColor("#34C759") else Color.parseColor("#FF3B30"))
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setPadding(0, 0, 0, 10)
+            }
+            val devInfo = TextView(ctx).apply {
+                text = "Android ${Build.VERSION.RELEASE}"
+                textSize = 14f
+                setTextColor(Color.parseColor("#A0A0A0"))
+            }
+            batteryWidget.addView(batIcon)
+            batteryWidget.addView(devInfo)
+
+            widgetsContainer?.addView(clockWidget)
+            widgetsContainer?.addView(batteryWidget)
+            menuCard.addView(widgetsContainer)
+
+            // --- MAC SEARCH BAR ---
+            val searchLayout = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = GradientDrawable().apply {
+                    cornerRadius = 24f
+                    setColor(Color.parseColor("#1AFFFFFF")) 
+                }
+                setPadding(40, 30, 40, 30)
+            }
+
+            val searchIcon = TextView(ctx).apply {
+                text = "🔍 "
+                textSize = 22f
+                setTextColor(Color.parseColor("#8E8E93"))
+            }
+            searchLayout.addView(searchIcon)
 
             spotlightInput = EditText(ctx).apply {
-                hint = "Hledat aplikace..."
-                setTextColor(Color.parseColor("#CDD6F4"))
-                setHintTextColor(Color.parseColor("#585B70"))
-                textSize = 20f
+                hint = "Spotlight Search..."
+                setTextColor(Color.WHITE)
+                setHintTextColor(Color.parseColor("#8E8E93"))
+                textSize = 22f
                 isSingleLine = true
                 background = null
-                setPadding(0, 0, 0, 30)
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             }
-            bodyLayout.addView(spotlightInput)
+            searchLayout.addView(spotlightInput)
+            menuCard.addView(searchLayout)
 
+            val divider = View(ctx).apply {
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 2).apply {
+                    setMargins(0, 40, 0, 20)
+                }
+                setBackgroundColor(Color.parseColor("#33FFFFFF"))
+            }
+            menuCard.addView(divider)
+
+            // --- VÝSLEDKY ---
             resultsContainer = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
             val scroll = ScrollView(ctx).apply { addView(resultsContainer) }
-            bodyLayout.addView(scroll)
-            menuCard.addView(bodyLayout)
+            menuCard.addView(scroll)
 
-            val cardParams = FrameLayout.LayoutParams(1100, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+            val cardParams = FrameLayout.LayoutParams(1250, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.CENTER
             }
             rootOverlay?.addView(menuCard, cardParams)
@@ -225,11 +306,12 @@ class ShortcutService : AccessibilityService() {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
                 override fun afterTextChanged(s: Editable?) {
-                    // POKUD PŘEPISUJEME KÓDEM, ZASTAVÍME TENTO BLOK!
                     if (isProgrammaticTextChange) return
 
                     val query = s.toString().lowercase().trim()
                     lastSearchRunnable?.let { mainHandler.removeCallbacks(it) }
+
+                    widgetsContainer?.visibility = if (query.isEmpty() && currentState == MenuState.MAIN) View.VISIBLE else View.GONE
 
                     val delayMs = 1000L / currentFps
 
@@ -239,7 +321,6 @@ class ShortcutService : AccessibilityService() {
                             return@Runnable
                         }
 
-                        // KDYŽ SMAŽEŠ TEXT, VRÁTÍ TĚ TO PŘESNĚ TAM, KDE JSI BYL!
                         if (query.isEmpty()) {
                             when (currentState) {
                                 MenuState.MAIN -> showDefaultMenu()
@@ -250,12 +331,12 @@ class ShortcutService : AccessibilityService() {
                             return@Runnable
                         }
 
-                        // Vlastní hledání aplikací (jen pokud zrovna nespravuješ blacklist)
                         thread {
                             val results = mutableListOf<SearchResult>()
                             for (app in cachedApps) {
                                 if (app.name.lowercase().contains(query)) {
-                                    results.add(SearchResult(app.name, "Aplikace: ${app.packageName}") {
+                                    // PŘIDÁNO: Posíláme do výsledku i skutečnou ikonu z cache!
+                                    results.add(SearchResult(app.name, "Aplikace: ${app.packageName}", app.icon, "") {
                                         launchFreeform(app.packageName)
                                     })
                                 }
@@ -273,14 +354,14 @@ class ShortcutService : AccessibilityService() {
                                     val fallbackAction = {
                                         val url = "https://www.google.com/search?q=" + Uri.encode(query)
                                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        startActivity(intent)
-                                        closeSpotlight()
+                                        startActivity(intent); closeSpotlight()
                                     }
-                                    currentResults = listOf(SearchResult("Hledat na webu", "", fallbackAction))
-                                    addMenuItem("Hledat na webu", "Vyhledat \"$query\" v prohlížeči", "■ ", "#89B4FA", fallbackAction)
+                                    currentResults = listOf(SearchResult("Hledat na webu", "", null, "🌐", fallbackAction))
+                                    addMenuItem("Hledat na webu", "Vyhledat \"$query\" v prohlížeči", null, "🌐") { fallbackAction() }
                                 } else {
                                     for (res in topResults) {
-                                        addMenuItem(res.title, res.subtitle, "■ ", "#89B4FA") { res.action(); closeSpotlight() }
+                                        // PŘIDÁNO: Vykreslíme skutečnou ikonu!
+                                        addMenuItem(res.title, res.subtitle, res.icon, res.emoji) { res.action(); closeSpotlight() }
                                     }
                                 }
                             }
@@ -304,21 +385,15 @@ class ShortcutService : AccessibilityService() {
         } catch (e: Exception) {}
     }
 
-    // --- ZÁKLADNÍ MENU ---
     private fun showDefaultMenu() {
         currentState = MenuState.MAIN
+        widgetsContainer?.visibility = View.VISIBLE
         currentResults = emptyList()
         resultsContainer?.removeAllViews()
         
-        addMenuItem("Nastavení systému", "Wi-Fi, Bluetooth, Přístupnost...", "⚙ ", "#89B4FA") {
-            showSettingsSubmenu()
-        }
-        
-        addMenuItem("Nastavení Spotlightu", "Rychlost (FPS) a Zakázané aplikace", "🛠 ", "#F9E2AF") {
-            showCustomSettings()
-        }
-        
-        addMenuItem("Nainstalovat aplikace", "Otevřít Obchod Play", "■ ", "#A6E3A1") {
+        addMenuItem("Systémové předvolby", "Wi-Fi, Bluetooth, Displej...", null, "⚙️") { showSettingsSubmenu() }
+        addMenuItem("Spotlight Nastavení", "Rychlost (FPS) a Zakázané aplikace", null, "🛠️") { showCustomSettings() }
+        addMenuItem("App Store", "Nainstalovat nové aplikace", null, "🛍️") {
             try {
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse("market://search?q=")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent); closeSpotlight()
@@ -326,71 +401,58 @@ class ShortcutService : AccessibilityService() {
         }
     }
 
-    // --- ANDROID NASTAVENÍ PODMENU ---
     private fun showSettingsSubmenu() {
         currentState = MenuState.SYS_SETTINGS
+        widgetsContainer?.visibility = View.GONE
         changeTextSafely("")
-        spotlightInput?.hint = "Hledat aplikace..."
+        spotlightInput?.hint = "Hledat v nastavení..."
         resultsContainer?.removeAllViews()
 
-        addMenuItem("◄ Zpět", "Zpět do hlavního menu", "■ ", "#CDD6F4") { showDefaultMenu() }
-        
-        addMenuItem("Wi-Fi", "Připojení k síti", "■ ", "#89B4FA") {
+        addMenuItem("◄ Zpět", "Zpět na Spotlight", null, "↩️") { showDefaultMenu() }
+        addMenuItem("Wi-Fi", "Připojení k síti", null, "🛜") {
             startActivity(Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight()
         }
-        addMenuItem("Bluetooth", "Spárovat zařízení", "■ ", "#89B4FA") {
+        addMenuItem("Bluetooth", "Spárovat zařízení", null, "🩵") {
             startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight()
         }
-        addMenuItem("Přístupnost", "Nastavení usnadnění", "■ ", "#89B4FA") {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight()
-        }
-        addMenuItem("Všechna nastavení", "Otevřít hlavní systémové nastavení", "■ ", "#89B4FA") {
+        addMenuItem("Všechna nastavení", "Hlavní panel", null, "⚙️") {
             startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight()
         }
     }
 
-    // --- TVOJE VLASTNÍ NASTAVENÍ SPOTLIGHTU ---
     private fun showCustomSettings() {
         currentState = MenuState.SPOT_SETTINGS
+        widgetsContainer?.visibility = View.GONE
         changeTextSafely("")
-        spotlightInput?.hint = "Hledat aplikace..."
+        spotlightInput?.hint = "Nastavení Spotlightu..."
         resultsContainer?.removeAllViews()
 
-        addMenuItem("◄ Zpět", "Zpět do hlavního menu", "■ ", "#CDD6F4") { showDefaultMenu() }
-        
-        addMenuItem("Rychlost překreslování", "Aktuálně: $currentFps FPS (Klikni pro změnu)", "⚡ ", "#A6E3A1") {
-            currentFps = when (currentFps) {
-                10 -> 30
-                30 -> 60
-                else -> 10
-            }
+        addMenuItem("◄ Zpět", "Zpět na Spotlight", null, "↩️") { showDefaultMenu() }
+        addMenuItem("Rychlost animací", "Aktuálně: $currentFps FPS", null, "⚡") {
+            currentFps = when (currentFps) { 10 -> 30; 30 -> 60; else -> 10 }
             prefs.edit().putInt("fps", currentFps).apply()
             showCustomSettings()
         }
-
-        addMenuItem("Zakázané aplikace (Blacklist)", "Vybrat, kde se menu neotevře", "🚫 ", "#F38BA8") {
+        addMenuItem("Zakázané aplikace (Blacklist)", "Kde se Spotlight neotevře", null, "🚫") {
             currentState = MenuState.BLACKLIST
             changeTextSafely("")
-            spotlightInput?.hint = "Hledat aplikaci k zakázání..."
+            spotlightInput?.hint = "Hledat aplikaci..."
             renderBlacklist("")
         }
     }
 
-    // --- BLACKLIST MENU ---
     private fun renderBlacklist(query: String) {
         val mainHandler = Handler(Looper.getMainLooper())
         thread {
             val filtered = cachedApps.filter { it.name.lowercase().contains(query) }.take(15)
             mainHandler.post {
                 resultsContainer?.removeAllViews()
-                addMenuItem("◄ Zpět", "Zpět do nastavení", "■ ", "#CDD6F4") { showCustomSettings() }
+                addMenuItem("◄ Zpět", "Zpět do nastavení", null, "↩️") { showCustomSettings() }
                 
                 for (app in filtered) {
                     val isBlocked = app.packageName in blacklist
-                    val icon = if (isBlocked) "☒ " else "☐ "
-                    val color = if (isBlocked) "#F38BA8" else "#A6E3A1" 
-                    
-                    addMenuItem(app.name, app.packageName, icon, color) {
+                    val iconEmoji = if (isBlocked) "🔴" else "🟢"
+                    addMenuItem(app.name, app.packageName, app.icon, iconEmoji) {
                         if (isBlocked) blacklist.remove(app.packageName) else blacklist.add(app.packageName)
                         prefs.edit().putStringSet("blacklist", blacklist).apply()
                         renderBlacklist(query) 
@@ -400,32 +462,51 @@ class ShortcutService : AccessibilityService() {
         }
     }
 
-    // VYKRESLOVAČ POLOŽEK
-    private fun addMenuItem(title: String, subtitle: String, iconText: String, iconColor: String, action: () -> Unit) {
+    // --- UPRAVENÝ VYKRESLOVAČ POLOŽEK (Podporuje obrázkové ikony i emoji) ---
+    private fun addMenuItem(title: String, subtitle: String, imageIcon: Drawable?, emojiIcon: String, action: () -> Unit) {
         val ctx = resultsContainer?.context ?: return
         val itemLayout = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(20, 20, 20, 20)
+            setPadding(30, 25, 30, 25)
             isClickable = true
             background = GradientDrawable().apply {
                 setColor(Color.TRANSPARENT)
-                cornerRadius = 12f
+                cornerRadius = 16f
             }
             setOnClickListener { action() }
         }
         
-        val icon = TextView(ctx).apply {
-            text = iconText
-            setTextColor(Color.parseColor(iconColor)) 
-            textSize = 16f
-            setPadding(0, 0, 20, 0)
+        // Zobrazíme buď opravdovou ikonu, nebo Emoji
+        if (imageIcon != null) {
+            val imageView = ImageView(ctx).apply {
+                setImageDrawable(imageIcon)
+                layoutParams = LinearLayout.LayoutParams(70, 70).apply { setMargins(0, 0, 30, 0) }
+            }
+            itemLayout.addView(imageView)
+            
+            // V blacklistu ukážeme k pravé ikoně ještě to červené/zelené kolečko
+            if (emojiIcon == "🔴" || emojiIcon == "🟢") {
+                 val statusIcon = TextView(ctx).apply {
+                    text = emojiIcon
+                    textSize = 20f
+                    setPadding(0, 0, 20, 0)
+                }
+                itemLayout.addView(statusIcon)
+            }
+        } else {
+            val iconView = TextView(ctx).apply {
+                text = emojiIcon
+                textSize = 24f
+                setPadding(0, 0, 30, 0)
+            }
+            itemLayout.addView(iconView)
         }
         
         val textLayout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         val titleView = TextView(ctx).apply {
             text = title
-            setTextColor(Color.parseColor("#CDD6F4"))
+            setTextColor(Color.WHITE)
             textSize = 18f
         }
         textLayout.addView(titleView)
@@ -433,13 +514,12 @@ class ShortcutService : AccessibilityService() {
         if (subtitle.isNotEmpty()) {
             val subView = TextView(ctx).apply {
                 text = subtitle
-                setTextColor(Color.parseColor("#A6ADC8"))
-                textSize = 12f
+                setTextColor(Color.parseColor("#A0A0A0"))
+                textSize = 13f
             }
             textLayout.addView(subView)
         }
         
-        itemLayout.addView(icon)
         itemLayout.addView(textLayout)
         resultsContainer?.addView(itemLayout)
     }
