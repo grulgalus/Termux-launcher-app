@@ -26,6 +26,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridLayout
@@ -46,7 +47,7 @@ class ShortcutService : AccessibilityService() {
 
     private var windowManager: WindowManager? = null
     private var rootOverlay: FrameLayout? = null
-    private var persistentWidget: View? = null // Plovoucí widget
+    private var persistentWidget: View? = null 
     private var cachedApps: List<AppItem> = emptyList()
 
     private lateinit var prefs: SharedPreferences
@@ -54,7 +55,7 @@ class ShortcutService : AccessibilityService() {
     private var blacklist = mutableSetOf<String>()
     private var activePackage = "" 
 
-    private enum class MenuState { MAIN, SYS_SETTINGS, SPOT_SETTINGS, BLACKLIST }
+    private enum class MenuState { MAIN, SYS_SETTINGS, SPOT_SETTINGS, WIDGET_SETTINGS, BLACKLIST }
     private var currentState = MenuState.MAIN
     private var isProgrammaticTextChange = false 
 
@@ -76,8 +77,13 @@ class ShortcutService : AccessibilityService() {
         prefs = getSharedPreferences("MacSpotlightPrefs", Context.MODE_PRIVATE)
         currentFps = prefs.getInt("fps", 30)
         blacklist = prefs.getStringSet("blacklist", mutableSetOf())?.toMutableSet() ?: mutableSetOf()
+        
+        // Výchozí widgety, pokud ještě nebyly nastaveny
+        if (!prefs.contains("active_widgets")) {
+            prefs.edit().putStringSet("active_widgets", setOf("clock", "battery")).apply()
+        }
 
-        Toast.makeText(this, "MAC Spotlight 2.0: Auto-Hide Widgety!", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "MAC Spotlight: Widget Manager & PC Fix!", Toast.LENGTH_SHORT).show()
         updateAppCache()
 
         val filter = IntentFilter().apply {
@@ -93,17 +99,25 @@ class ShortcutService : AccessibilityService() {
         try { unregisterReceiver(packageReceiver) } catch (e: Exception) {}
     }
 
-    // --- AUTO-HIDE LOGIKA: Zmizí, když otevřeš aplikaci! ---
+    // --- OPRAVENÁ AUTO-HIDE LOGIKA PRO PC REŽIM ---
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            event.packageName?.let { 
-                activePackage = it.toString() 
+        val type = event?.eventType
+        // Reagujeme na jakoukoliv změnu oken nebo kliknutí, aby minimalizace oken fungovala bleskově
+        if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || type == AccessibilityEvent.TYPE_WINDOWS_CHANGED || type == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+            event?.packageName?.let { 
+                val pkg = it.toString()
                 
-                // Detekce, jestli jsi na ploše (Launcher) nebo v systémovém UI
+                // Nechceme se schovat kvůli sobě
+                if (pkg != "com.example.termuxlauncher") {
+                    activePackage = pkg
+                }
+                
+                // Přidáno "systemui" - to je taskbar v DeXu/PC režimu. Když minimalizuješ kliknutím, aktivuje se systemui.
                 val isDesktop = activePackage.contains("launcher", true) || 
                                 activePackage.contains("home", true) || 
                                 activePackage.contains("desktop", true) || 
-                                activePackage == "com.android.systemui"
+                                activePackage == "com.android.systemui" || 
+                                activePackage.isEmpty()
                 
                 if (persistentWidget != null) {
                     val mainHandler = Handler(Looper.getMainLooper())
@@ -201,7 +215,6 @@ class ShortcutService : AccessibilityService() {
                 elevation = 40f
             }
 
-            // --- HORIZONTÁLNÍ SCROLL PRO WIDGETY V MENU ---
             widgetsScroll = HorizontalScrollView(ctx).apply {
                 isHorizontalScrollBarEnabled = false
                 setPadding(0, 0, 0, 40)
@@ -211,79 +224,14 @@ class ShortcutService : AccessibilityService() {
                 orientation = LinearLayout.HORIZONTAL
             }
 
-            // Pomocník na vytvoření MAC widget čtverce
-            val createMacSquare = { view: LinearLayout ->
-                view.apply {
-                    orientation = LinearLayout.VERTICAL
-                    gravity = Gravity.CENTER
-                    background = GradientDrawable().apply {
-                        cornerRadius = 32f
-                        setColor(Color.parseColor("#26FFFFFF"))
-                    }
-                    layoutParams = LinearLayout.LayoutParams(250, 250).apply { setMargins(0, 0, 20, 0) }
-                }
-            }
-
-            // 1. Hodiny
-            val clockWidget = LinearLayout(ctx).let { createMacSquare(it) }.apply {
-                val timeText = TextClock(ctx).apply {
-                    format12Hour = "HH:mm"; format24Hour = "HH:mm"
-                    textSize = 34f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; setTypeface(null, android.graphics.Typeface.BOLD)
-                }
-                val dateText = TextClock(ctx).apply {
-                    format12Hour = "EEEE"; format24Hour = "EEEE"
-                    textSize = 14f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#A0A0A0")); setPadding(0, 10, 0, 0)
-                }
-                addView(timeText); addView(dateText)
-            }
-
-            // 2. MAC Kalendář
-            val calendarWidget = LinearLayout(ctx).let { createMacSquare(it) }.apply {
-                val monthText = TextView(ctx).apply {
-                    text = SimpleDateFormat("MMMM", Locale.getDefault()).format(Date()).uppercase()
-                    textSize = 14f; setTextColor(Color.parseColor("#FF3B30")); gravity = Gravity.CENTER; setTypeface(null, android.graphics.Typeface.BOLD)
-                }
-                val dayText = TextView(ctx).apply {
-                    text = SimpleDateFormat("d", Locale.getDefault()).format(Date())
-                    textSize = 42f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; setTypeface(null, android.graphics.Typeface.BOLD)
-                }
-                addView(monthText); addView(dayText)
-            }
-
-            // 3. Baterie
-            val batteryWidget = LinearLayout(ctx).let { createMacSquare(it) }.apply {
-                val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
-                val batLevel = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-                val batIcon = TextView(ctx).apply {
-                    text = if (batLevel > 20) "🔋" else "🪫"
-                    textSize = 28f; gravity = Gravity.CENTER; setPadding(0, 0, 0, 10)
-                }
-                val bText = TextView(ctx).apply {
-                    text = "$batLevel %"
-                    textSize = 20f; gravity = Gravity.CENTER; setTextColor(if (batLevel > 20) Color.parseColor("#34C759") else Color.parseColor("#FF3B30")); setTypeface(null, android.graphics.Typeface.BOLD)
-                }
-                addView(batIcon); addView(bText)
-            }
-
-            // 4. Úložiště a RAM
-            val statWidget = LinearLayout(ctx).let { createMacSquare(it) }.apply {
-                val actManager = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
-                val memInfo = android.app.ActivityManager.MemoryInfo()
-                actManager.getMemoryInfo(memInfo)
-                val availRam = memInfo.availMem / 1073741824L
-
-                val statFs = StatFs(Environment.getExternalStorageDirectory().path)
-                val freeGb = statFs.availableBytes / 1073741824L
-
-                val ramText = TextView(ctx).apply { text = "🧠 RAM: ${availRam}GB"; textSize = 13f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; setPadding(0,0,0,10) }
-                val romText = TextView(ctx).apply { text = "💾 Disk: ${freeGb}GB"; textSize = 13f; setTextColor(Color.parseColor("#A0A0A0")); gravity = Gravity.CENTER }
-                addView(ramText); addView(romText)
-            }
-
-            widgetsContainer.addView(clockWidget)
-            widgetsContainer.addView(calendarWidget)
-            widgetsContainer.addView(batteryWidget)
-            widgetsContainer.addView(statWidget)
+            // --- VYSOCE CENTROVANÉ WIDGETY PRO SPOTLIGHT ---
+            val activeWidgets = prefs.getStringSet("active_widgets", setOf("clock", "battery"))!!
+            
+            if (activeWidgets.contains("clock")) widgetsContainer.addView(createClockWidget(ctx, false))
+            if (activeWidgets.contains("calendar")) widgetsContainer.addView(createCalendarWidget(ctx, false))
+            if (activeWidgets.contains("battery")) widgetsContainer.addView(createBatteryWidget(ctx, false))
+            if (activeWidgets.contains("system")) widgetsContainer.addView(createSystemWidget(ctx, false))
+            if (activeWidgets.contains("custom")) widgetsContainer.addView(createCustomNoteWidget(ctx, false))
 
             widgetsScroll?.addView(widgetsContainer)
             menuCard.addView(widgetsScroll)
@@ -334,7 +282,7 @@ class ShortcutService : AccessibilityService() {
 
             spotlightInput?.setOnKeyListener { _, keyCode, keyEvent ->
                 if (keyCode == KeyEvent.KEYCODE_ENTER && keyEvent.action == KeyEvent.ACTION_DOWN) {
-                    if (currentResults.isNotEmpty() && currentState != MenuState.BLACKLIST) {
+                    if (currentResults.isNotEmpty() && currentState != MenuState.BLACKLIST && currentState != MenuState.WIDGET_SETTINGS) {
                         currentResults[0].action() 
                         closeSpotlight()
                     }
@@ -355,14 +303,20 @@ class ShortcutService : AccessibilityService() {
                     val query = s.toString().lowercase().trim()
                     lastSearchRunnable?.let { mainHandler.removeCallbacks(it) }
 
-                    // Skrytí widgetů při psaní
                     widgetsScroll?.visibility = if (query.isEmpty() && currentState == MenuState.MAIN) View.VISIBLE else View.GONE
 
                     val delayMs = 1000L / currentFps
 
                     lastSearchRunnable = Runnable {
-                        if (currentState == MenuState.BLACKLIST) {
-                            renderBlacklist(query)
+                        if (currentState == MenuState.BLACKLIST) { renderBlacklist(query); return@Runnable }
+                        
+                        // Zpracování ukládání vlastní poznámky!
+                        if (currentState == MenuState.WIDGET_SETTINGS) {
+                            if (query.isNotEmpty()) {
+                                prefs.edit().putString("custom_note_text", s.toString()).apply()
+                                // Pokud je poznámka prázdná, renderujeme menu, jinak ji necháme psát
+                            }
+                            renderWidgetSettings()
                             return@Runnable
                         }
 
@@ -385,12 +339,9 @@ class ShortcutService : AccessibilityService() {
                                     })
                                 }
                             }
-                            
                             val topResults = results.take(8)
-                            
                             mainHandler.post {
                                 if (spotlightInput?.text.toString().trim() != query) return@post
-                                
                                 currentResults = topResults 
                                 resultsContainer?.removeAllViews()
 
@@ -436,81 +387,137 @@ class ShortcutService : AccessibilityService() {
         currentResults = emptyList()
         resultsContainer?.removeAllViews()
         
-        addMenuItem("Mac Dashboard na plochu", "2x2 Widget (Zavírá se pravým/trojklikem)", null, "🖥️") { 
+        addMenuItem("Plovoucí Dashboard (PC Widget)", "Zobrazí na ploše tvé widgety", null, "🖥️") { 
             spawnPersistentWidget()
             closeSpotlight()
         }
+        addMenuItem("Nastavení Widgetů", "Vyber si widgety & Vlastní poznámka", null, "🧩") { 
+            currentState = MenuState.WIDGET_SETTINGS
+            changeTextSafely("")
+            spotlightInput?.hint = "Napiš svou vlastní poznámku zde..."
+            renderWidgetSettings() 
+        }
         addMenuItem("Systémové předvolby", "Wi-Fi, Bluetooth, Displej...", null, "⚙️") { showSettingsSubmenu() }
         addMenuItem("Spotlight Nastavení", "Rychlost (FPS) a Zakázané aplikace", null, "🛠️") { showCustomSettings() }
-        addMenuItem("App Store", "Nainstalovat nové aplikace", null, "🛍️") {
-            try {
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("market://search?q=")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                startActivity(intent); closeSpotlight()
-            } catch (e: Exception) {}
-        }
     }
 
-    // ----- PLOVOUCÍ DASHBOARD (2x2) S AUTO-HIDE DETEKCÍ -----
-    private fun spawnPersistentWidget() {
-        if (persistentWidget != null) return
-
-        val ctx = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
+    // --- WIDGET MANAGER ---
+    private fun renderWidgetSettings() {
+        resultsContainer?.removeAllViews()
+        widgetsScroll?.visibility = View.GONE
         
-        // Namísto řady vytvoříme krásný 2x2 Grid (Mac Dashboard)
-        val widgetContainer = GridLayout(ctx).apply {
-            columnCount = 2
-            rowCount = 2
-            setPadding(10, 10, 10, 10)
+        addMenuItem("◄ Zpět na Spotlight", "Vrátí se do hlavního menu (uloží úpravy)", null, "↩️") { 
+            // Pokud měl plovoucí widget otevřený, rovnou mu ho obnovíme
+            if (persistentWidget != null) { spawnPersistentWidget() }
+            showDefaultMenu() 
         }
-
-        val createMacSquare = { view: LinearLayout ->
-            view.apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                background = GradientDrawable().apply {
-                    cornerRadius = 45f 
-                    setColor(Color.parseColor("#CC1A1A1A")) 
-                    setStroke(2, Color.parseColor("#44FFFFFF"))
-                }
-                layoutParams = GridLayout.LayoutParams().apply {
-                    width = 240
-                    height = 240
-                    setMargins(15, 15, 15, 15)
-                }
-                elevation = 20f
+        
+        val activeWidgets = prefs.getStringSet("active_widgets", mutableSetOf())?.toMutableSet() ?: mutableSetOf()
+        
+        val toggleWidget = { key: String, name: String, emoji: String ->
+            val isEnabled = activeWidgets.contains(key)
+            val icon = if (isEnabled) "✅" else "⬜"
+            addMenuItem(name, if (isEnabled) "Zobrazeno na ploše" else "Skryto", null, icon) {
+                if (isEnabled) activeWidgets.remove(key) else activeWidgets.add(key)
+                prefs.edit().putStringSet("active_widgets", activeWidgets).apply()
+                renderWidgetSettings()
             }
         }
 
-        // 1. Hodiny
-        val clockBox = LinearLayout(ctx).let { createMacSquare(it) }.apply {
-            addView(TextClock(ctx).apply { format24Hour = "HH:mm"; textSize = 32f; setTextColor(Color.WHITE); setTypeface(null, android.graphics.Typeface.BOLD) })
-            addView(TextClock(ctx).apply { format24Hour = "EEEE"; textSize = 12f; setTextColor(Color.parseColor("#A0A0A0")); setPadding(0, 5, 0, 0) })
-        }
+        toggleWidget("clock", "Hodiny (Mac style)", "🕒")
+        toggleWidget("calendar", "Kalendář", "📅")
+        toggleWidget("battery", "Stav Baterie", "🔋")
+        toggleWidget("system", "RAM a Úložiště", "💾")
+        toggleWidget("custom", "Moje Poznámka (Napiš text do vyhledávání!)", "📝")
+    }
 
-        // 2. Kalendář
-        val calBox = LinearLayout(ctx).let { createMacSquare(it) }.apply {
-            addView(TextView(ctx).apply { text = SimpleDateFormat("MMM", Locale.getDefault()).format(Date()).uppercase(); textSize = 14f; setTextColor(Color.parseColor("#FF3B30")); setTypeface(null, android.graphics.Typeface.BOLD) })
-            addView(TextView(ctx).apply { text = SimpleDateFormat("d", Locale.getDefault()).format(Date()); textSize = 40f; setTextColor(Color.WHITE); setTypeface(null, android.graphics.Typeface.BOLD) })
+    // --- DOKONALE VYCENTROVANÉ GENERÁTORY WIDGETŮ ---
+    private fun getMacSquare(ctx: Context, isDesktop: Boolean): LinearLayout {
+        return LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER // Tohle zaručí dokonalý střed!
+            background = GradientDrawable().apply {
+                cornerRadius = if (isDesktop) 45f else 32f
+                setColor(if (isDesktop) Color.parseColor("#CC1A1A1A") else Color.parseColor("#26FFFFFF"))
+                if (isDesktop) setStroke(2, Color.parseColor("#44FFFFFF"))
+            }
+            val size = if (isDesktop) 250 else 240
+            layoutParams = if (isDesktop) GridLayout.LayoutParams().apply { width = size; height = size; setMargins(15, 15, 15, 15) } 
+                           else LinearLayout.LayoutParams(size, size).apply { setMargins(0, 0, 20, 0) }
+            if (isDesktop) elevation = 20f
         }
+    }
 
-        // 3. Baterie
-        val battBox = LinearLayout(ctx).let { createMacSquare(it) }.apply {
+    private fun createClockWidget(ctx: Cotext, isDesktop: Boolean): LinearLayout {
+        return getMacSquare(ctx, isDesktop).apply {
+            addView(TextView(ctx).apply { text = SimpleDateFormat("MMM", Locale.getDefault()).format(Date()).uppercase(); textSize = 15f; setTextColor(Color.parseColor("#FF3B30")); setTypeface(null, android.graphics.Typeface.BOLD); gravity = Gravity.CENTER })
+            addView(TextView(ctx).apply { text = SimpleDateFormat("d", Locale.getDefault()).format(Date()); textSize = 42f; setTextColor(Color.WHITE); setTypeface(null, android.graphics.Typeface.BOLD); gravity = Gravity.CENTER })
+        }
+    }
+
+    private fun createBatteryWidget(ctx: Context, isDesktop: Boolean): LinearLayout {
+        return getMacSquare(ctx, isDesktop).apply {
             val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
             val batLvl = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-            addView(TextView(ctx).apply { text = if (batLvl > 20) "🔋" else "🪫"; textSize = 28f; setPadding(0, 0, 0, 5) })
-            addView(TextView(ctx).apply { text = "$batLvl %"; textSize = 20f; setTextColor(if (batLvl > 20) Color.parseColor("#34C759") else Color.parseColor("#FF3B30")); setTypeface(null, android.graphics.Typeface.BOLD) })
+            
+            // OPRAVA 2: DETEKCE NABÍJENÍ
+            val status = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS)
+            val isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
+            
+            addView(TextView(ctx).apply { text = if (isCharging) "⚡" else if (batLvl > 20) "🔋" else "🪫"; textSize = 30f; gravity = Gravity.CENTER; setPadding(0, 0, 0, 5) })
+            addView(TextView(ctx).apply { text = "$batLvl %"; textSize = 22f; setTextColor(if (batLvl > 20) Color.parseColor("#34C759") else Color.parseColor("#FF3B30")); setTypeface(null, android.graphics.Typeface.BOLD); gravity = Gravity.CENTER })
+            if (isCharging) {
+                addView(TextView(ctx).apply { text = "Nabíjí se"; textSize = 11f; setTextColor(Color.parseColor("#34C759")); gravity = Gravity.CENTER; setPadding(0,5,0,0) })
+            }
+        }
+    }
+
+    private fun createSystemWidget(ctx: Context, isDesktop: Boolean): LinearLayout {
+        return getMacSquare(ctx, isDesktop).apply {
+            val actManager = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+            val memInfo = android.app.ActivityManager.MemoryInfo()
+            actManager.getMemoryInfo(memInfo)
+            val availRam = memInfo.availMem / 1073741824L
+            
+            val statFs = StatFs(Environment.getExternalStorageDirectory().path)
+            val freeGb = statFs.availableBytes / 1073741824L
+
+            addView(TextView(ctx).apply { text = "RAM: ${availRam} GB"; textSize = 15f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; setPadding(0,0,0,10) })
+            addView(TextView(ctx).apply { text = "Disk: ${freeGb} GB"; textSize = 14f; setTextColor(Color.parseColor("#A0A0A0")); gravity = Gravity.CENTER })
+        }
+    }
+
+    // NOVÝ CUSTOM WIDGET (MOJE POZNÁMKA)
+    private fun createCustomNoteWidget(ctx: Context, isDesktop: Boolean): LinearLayout {
+        return getMacSquare(ctx, isDesktop).apply {
+            val noteText = prefs.getString("custom_note_text", "📝 Napiš něco do hledání!")
+            addView(TextView(ctx).apply { text = "Poznámka"; textSize = 12f; setTextColor(Color.parseColor("#8E8E93")); gravity = Gravity.CENTER; setTypeface(null, android.graphics.Typeface.BOLD); setPadding(0,0,0,10) })
+            addView(TextView(ctx).apply { text = noteText; textSize = 16f; setTextColor(Color.CYAN); gravity = Gravity.CENTER })
+        }
+    }
+
+    // ----- PLOVOUCÍ DASHBOARD (PC WIDGET) -----
+    private fun spawnPersistentWidget() {
+        if (persistentWidget != null) {
+            windowManager?.removeView(persistentWidget)
+            persistentWidget = null
         }
 
-        // 4. Systém 
-        val statBox = LinearLayout(ctx).let { createMacSquare(it) }.apply {
-            addView(TextView(ctx).apply { text = "System OK"; textSize = 14f; setTextColor(Color.parseColor("#34C759")); setTypeface(null, android.graphics.Typeface.BOLD); setPadding(0, 0, 0, 10) })
-            addView(TextView(ctx).apply { text = "Mac UI"; textSize = 16f; setTextColor(Color.WHITE) })
+        val ctx = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
+        val activeWidgets = prefs.getStringSet("active_widgets", setOf("clock", "battery"))!!
+
+        // Dynamická Grid tabulka podle toho, kolik máš widgetů
+        val widgetContainer = GridLayout(ctx).apply {
+            columnCount = if (activeWidgets.size > 2) 2 else activeWidgets.size
+            rowCount = (activeWidgets.size + 1) / 2
+            setPadding(10, 10, 10, 10)
         }
 
-        widgetContainer.addView(clockBox)
-        widgetContainer.addView(calBox)
-        widgetContainer.addView(battBox)
-        widgetContainer.addView(statBox)
+        if (activeWidgets.contains("clock")) widgetContainer.addView(createClockWidget(ctx, true))
+        if (activeWidgets.contains("calendar")) widgetContainer.addView(createCalendarWidget(ctx, true))
+        if (activeWidgets.contains("battery")) widgetContainer.addView(createBatteryWidget(ctx, true))
+        if (activeWidgets.contains("system")) widgetContainer.addView(createSystemWidget(ctx, true))
+        if (activeWidgets.contains("custom")) widgetContainer.addView(createCustomNoteWidget(ctx, true))
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -519,27 +526,22 @@ class ShortcutService : AccessibilityService() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.END // Zarovnáme na pravý okraj
+            gravity = Gravity.TOP or Gravity.END 
             x = 50
             y = 50
         }
 
-        // TAHÁNÍ + PRAVÝ KLIK + TROJKLIK
         var clickCount = 0
         var lastClickTime = 0L
 
         widgetContainer.setOnTouchListener(object : View.OnTouchListener {
-            private var initialX = 0
-            private var initialY = 0
-            private var initialTouchX = 0f
-            private var initialTouchY = 0f
+            private var initialX = 0; private var initialY = 0
+            private var initialTouchX = 0f; private var initialTouchY = 0f
 
             override fun onTouch(v: View, event: MotionEvent): Boolean {
                 if (event.buttonState == MotionEvent.BUTTON_SECONDARY || event.action == MotionEvent.ACTION_BUTTON_PRESS) {
-                    removeWidget()
-                    return true
+                    removeWidget(); return true
                 }
-
                 when (event.action) {
                     MotionEvent.ACTION_DOWN -> {
                         initialX = params.x; initialY = params.y; initialTouchX = event.rawX; initialTouchY = event.rawY
@@ -548,7 +550,7 @@ class ShortcutService : AccessibilityService() {
                     MotionEvent.ACTION_MOVE -> {
                         val dx = event.rawX - initialTouchX; val dy = event.rawY - initialTouchY
                         if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
-                            params.x = initialX - dx.toInt() // Mínus, protože gravity je END
+                            params.x = initialX - dx.toInt()
                             params.y = initialY + dy.toInt()
                             windowManager?.updateViewLayout(widgetContainer, params)
                         }
@@ -577,9 +579,19 @@ class ShortcutService : AccessibilityService() {
             }
         })
 
+        // Obnovování baterie a času
+        val handler = Handler(Looper.getMainLooper())
+        val updater = object : Runnable {
+            override fun run() {
+                if (persistentWidget == null) return
+                // Prostě ho celý přerenderujeme (nejspolehlivější pro Custom text i baterii)
+                spawnPersistentWidget() 
+            }
+        }
+        handler.postDelayed(updater, 30000) // Každých 30s se to na ploše samo aktualizuje
+
         persistentWidget = widgetContainer
         windowManager?.addView(widgetContainer, params)
-        Toast.makeText(this, "Mac Dashboard přidán! Při otevření aplikace se SÁM SCHOVÁ. Trojklik pro smazání.", Toast.LENGTH_LONG).show()
     }
 
     private fun showSettingsSubmenu() {
@@ -590,15 +602,8 @@ class ShortcutService : AccessibilityService() {
         resultsContainer?.removeAllViews()
 
         addMenuItem("◄ Zpět", "Zpět na Spotlight", null, "↩️") { showDefaultMenu() }
-        addMenuItem("Wi-Fi", "Připojení k síti", null, "🛜") {
-            startActivity(Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight()
-        }
-        addMenuItem("Bluetooth", "Spárovat zařízení", null, "🩵") {
-            startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight()
-        }
-        addMenuItem("Všechna nastavení", "Hlavní panel", null, "⚙️") {
-            startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight()
-        }
+        addMenuItem("Wi-Fi", "Připojení k síti", null, "🛜") { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight() }
+        addMenuItem("Bluetooth", "Spárovat zařízení", null, "🩵") { startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); closeSpotlight() }
     }
 
     private fun showCustomSettings() {
@@ -609,17 +614,8 @@ class ShortcutService : AccessibilityService() {
         resultsContainer?.removeAllViews()
 
         addMenuItem("◄ Zpět", "Zpět na Spotlight", null, "↩️") { showDefaultMenu() }
-        addMenuItem("Rychlost animací", "Aktuálně: $currentFps FPS", null, "⚡") {
-            currentFps = when (currentFps) { 10 -> 30; 30 -> 60; else -> 10 }
-            prefs.edit().putInt("fps", currentFps).apply()
-            showCustomSettings()
-        }
-        addMenuItem("Zakázané aplikace (Blacklist)", "Kde se Spotlight neotevře", null, "🚫") {
-            currentState = MenuState.BLACKLIST
-            changeTextSafely("")
-            spotlightInput?.hint = "Hledat aplikaci..."
-            renderBlacklist("")
-        }
+        addMenuItem("Rychlost animací", "Aktuálně: $currentFps FPS", null, "⚡") { currentFps = when (currentFps) { 10 -> 30; 30 -> 60; else -> 10 }; prefs.edit().putInt("fps", currentFps).apply(); showCustomSettings() }
+        addMenuItem("Zakázané aplikace (Blacklist)", "Kde se Spotlight neotevře", null, "🚫") { currentState = MenuState.BLACKLIST; changeTextSafely(""); spotlightInput?.hint = "Hledat aplikaci..."; renderBlacklist("") }
     }
 
     private fun renderBlacklist(query: String) {
@@ -629,7 +625,6 @@ class ShortcutService : AccessibilityService() {
             mainHandler.post {
                 resultsContainer?.removeAllViews()
                 addMenuItem("◄ Zpět", "Zpět do nastavení", null, "↩️") { showCustomSettings() }
-                
                 for (app in filtered) {
                     val isBlocked = app.packageName in blacklist
                     val iconEmoji = if (isBlocked) "🔴" else "🟢"
@@ -650,44 +645,27 @@ class ShortcutService : AccessibilityService() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(30, 25, 30, 25)
             isClickable = true
-            background = GradientDrawable().apply {
-                setColor(Color.TRANSPARENT)
-                cornerRadius = 16f
-            }
+            background = GradientDrawable().apply { setColor(Color.TRANSPARENT); cornerRadius = 16f }
             setOnClickListener { action() }
         }
         
         if (imageIcon != null) {
-            val imageView = ImageView(ctx).apply {
-                setImageDrawable(imageIcon)
-                layoutParams = LinearLayout.LayoutParams(70, 70).apply { setMargins(0, 0, 30, 0) }
-            }
-            itemLayout.addView(imageView)
-            
-            if (emojiIcon == "🔴" || emojiIcon == "🟢") {
-                 val statusIcon = TextView(ctx).apply { text = emojiIcon; textSize = 20f; setPadding(0, 0, 20, 0) }
-                itemLayout.addView(statusIcon)
-            }
+            itemLayout.addView(ImageView(ctx).apply { setImageDrawable(imageIcon); layoutParams = LinearLayout.LayoutParams(70, 70).apply { setMargins(0, 0, 30, 0) } })
+            if (emojiIcon == "🔴" || emojiIcon == "🟢") itemLayout.addView(TextView(ctx).apply { text = emojiIcon; textSize = 20f; setPadding(0, 0, 20, 0) })
         } else {
-            val iconView = TextView(ctx).apply { text = emojiIcon; textSize = 24f; setPadding(0, 0, 30, 0) }
-            itemLayout.addView(iconView)
+            itemLayout.addView(TextView(ctx).apply { text = emojiIcon; textSize = 24f; setPadding(0, 0, 30, 0) })
         }
         
         val textLayout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         textLayout.addView(TextView(ctx).apply { text = title; setTextColor(Color.WHITE); textSize = 18f })
-        if (subtitle.isNotEmpty()) {
-            textLayout.addView(TextView(ctx).apply { text = subtitle; setTextColor(Color.parseColor("#A0A0A0")); textSize = 13f })
-        }
+        if (subtitle.isNotEmpty()) textLayout.addView(TextView(ctx).apply { text = subtitle; setTextColor(Color.parseColor("#A0A0A0")); textSize = 13f })
         
         itemLayout.addView(textLayout)
         resultsContainer?.addView(itemLayout)
     }
 
     private fun closeSpotlight() {
-        if (rootOverlay != null) {
-            windowManager?.removeView(rootOverlay)
-            rootOverlay = null
-        }
+        if (rootOverlay != null) { windowManager?.removeView(rootOverlay); rootOverlay = null }
     }
 
     private fun launchFreeform(packageName: String) {
@@ -696,10 +674,7 @@ class ShortcutService : AccessibilityService() {
             if (intent != null) {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
                 val options = android.app.ActivityOptions.makeBasic()
-                try {
-                    val method = options.javaClass.getMethod("setLaunchWindowingMode", Int::class.java)
-                    method.invoke(options, 5)
-                } catch (e: Exception) {}
+                try { val method = options.javaClass.getMethod("setLaunchWindowingMode", Int::class.java); method.invoke(options, 5) } catch (e: Exception) {}
                 startActivity(intent, options.toBundle())
             }
         } catch (e: Exception) {}
