@@ -54,7 +54,6 @@ class ShortcutService : AccessibilityService() {
     private var resultsContainer: LinearLayout? = null
     private var widgetsContainer: LinearLayout? = null
 
-    // APP ITEM TEĎ OBSAHUJE I SKUTEČNOU IKONU APLIKACE!
     data class SearchResult(val title: String, val subtitle: String, val icon: Drawable?, val emoji: String, val action: () -> Unit)
     data class AppItem(val name: String, val packageName: String, val icon: Drawable?)
 
@@ -69,7 +68,7 @@ class ShortcutService : AccessibilityService() {
         currentFps = prefs.getInt("fps", 30)
         blacklist = prefs.getStringSet("blacklist", mutableSetOf())?.toMutableSet() ?: mutableSetOf()
 
-        Toast.makeText(this, "MAC-LIKE Spotlight s ikonami načten!", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "MAC Spotlight (Fix taskbaru & hodin)!", Toast.LENGTH_SHORT).show()
         updateAppCache()
 
         val filter = IntentFilter().apply {
@@ -100,7 +99,7 @@ class ShortcutService : AccessibilityService() {
             for (app in apps) {
                 if (packageManager.getLaunchIntentForPackage(app.packageName) != null) {
                     val appName = app.loadLabel(packageManager).toString()
-                    val icon = app.loadIcon(packageManager) // Načteme skutečnou ikonu z Androidu
+                    val icon = app.loadIcon(packageManager)
                     temp.add(AppItem(appName, app.packageName, icon))
                 }
             }
@@ -120,7 +119,7 @@ class ShortcutService : AccessibilityService() {
         if (event.keyCode == KeyEvent.KEYCODE_ENTER && isShift) {
             if (event.action == KeyEvent.ACTION_DOWN) {
                 if (activePackage in blacklist) {
-                    Toast.makeText(this, "MAC-LIKE Spotlight zakázán v této aplikaci!", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Spotlight je zde zakázán!", Toast.LENGTH_SHORT).show()
                 } else {
                     toggleSpotlight()
                 }
@@ -160,6 +159,10 @@ class ShortcutService : AccessibilityService() {
             
             rootOverlay = FrameLayout(ctx).apply {
                 setBackgroundColor(Color.parseColor("#40000000")) 
+                
+                // OPRAVA 1: FitsSystemWindows způsobí, že okno nezasahuje do systémových lišt!
+                fitsSystemWindows = true 
+                
                 setOnClickListener { closeSpotlight() }
             }
 
@@ -174,16 +177,16 @@ class ShortcutService : AccessibilityService() {
                 setPadding(50, 50, 50, 50)
             }
 
-            // --- MAC WIDGETY ---
             widgetsContainer = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 weightSum = 2f
                 setPadding(0, 0, 0, 40)
             }
 
+            // --- OPRAVENÉ HODINY (Přesně na střed) ---
             val clockWidget = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
+                gravity = Gravity.CENTER // Celý box se vycentruje
                 background = GradientDrawable().apply {
                     cornerRadius = 32f
                     setColor(Color.parseColor("#26FFFFFF"))
@@ -193,15 +196,18 @@ class ShortcutService : AccessibilityService() {
             val timeText = TextClock(ctx).apply {
                 format12Hour = "HH:mm"
                 format24Hour = "HH:mm"
-                textSize = 32f
+                textSize = 34f // Mírně zvětšeno
                 setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER // Text se vycentruje i uvnitř vlastního rámečku
                 setTypeface(null, android.graphics.Typeface.BOLD)
             }
             val dateText = TextClock(ctx).apply {
                 format12Hour = "EEEE, dd. MM."
                 format24Hour = "EEEE, dd. MM."
                 textSize = 14f
+                gravity = Gravity.CENTER // I datum na střed
                 setTextColor(Color.parseColor("#A0A0A0"))
+                setPadding(0, 10, 0, 0)
             }
             clockWidget.addView(timeText)
             clockWidget.addView(dateText)
@@ -222,6 +228,7 @@ class ShortcutService : AccessibilityService() {
             val batIcon = TextView(ctx).apply {
                 text = if (batLevel > 20) "🔋 $batLevel %" else "🪫 $batLevel %"
                 textSize = 24f
+                gravity = Gravity.CENTER
                 setTextColor(if (batLevel > 20) Color.parseColor("#34C759") else Color.parseColor("#FF3B30"))
                 setTypeface(null, android.graphics.Typeface.BOLD)
                 setPadding(0, 0, 0, 10)
@@ -229,6 +236,7 @@ class ShortcutService : AccessibilityService() {
             val devInfo = TextView(ctx).apply {
                 text = "Android ${Build.VERSION.RELEASE}"
                 textSize = 14f
+                gravity = Gravity.CENTER
                 setTextColor(Color.parseColor("#A0A0A0"))
             }
             batteryWidget.addView(batIcon)
@@ -238,7 +246,6 @@ class ShortcutService : AccessibilityService() {
             widgetsContainer?.addView(batteryWidget)
             menuCard.addView(widgetsContainer)
 
-            // --- MAC SEARCH BAR ---
             val searchLayout = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -276,13 +283,13 @@ class ShortcutService : AccessibilityService() {
             }
             menuCard.addView(divider)
 
-            // --- VÝSLEDKY ---
             resultsContainer = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
             val scroll = ScrollView(ctx).apply { addView(resultsContainer) }
             menuCard.addView(scroll)
 
             val cardParams = FrameLayout.LayoutParams(1250, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.CENTER
+                topMargin = -100 // Vynese to trochu výš, aby se pod to vešla klávesnice/taskbar
             }
             rootOverlay?.addView(menuCard, cardParams)
 
@@ -335,7 +342,6 @@ class ShortcutService : AccessibilityService() {
                             val results = mutableListOf<SearchResult>()
                             for (app in cachedApps) {
                                 if (app.name.lowercase().contains(query)) {
-                                    // PŘIDÁNO: Posíláme do výsledku i skutečnou ikonu z cache!
                                     results.add(SearchResult(app.name, "Aplikace: ${app.packageName}", app.icon, "") {
                                         launchFreeform(app.packageName)
                                     })
@@ -360,7 +366,6 @@ class ShortcutService : AccessibilityService() {
                                     addMenuItem("Hledat na webu", "Vyhledat \"$query\" v prohlížeči", null, "🌐") { fallbackAction() }
                                 } else {
                                     for (res in topResults) {
-                                        // PŘIDÁNO: Vykreslíme skutečnou ikonu!
                                         addMenuItem(res.title, res.subtitle, res.icon, res.emoji) { res.action(); closeSpotlight() }
                                     }
                                 }
@@ -371,13 +376,17 @@ class ShortcutService : AccessibilityService() {
                 }
             })
 
+            // OPRAVA 2: PARAMETRY OKNA UPRAVENY, ABY NENIČILY TASKBAR
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT, 
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT
-            )
+            ).apply {
+                // Toto přikáže oknu, aby se přizpůsobilo klávesnici a navigační liště
+                softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+            }
 
             windowManager?.addView(rootOverlay, params)
             spotlightInput?.requestFocus()
@@ -462,7 +471,6 @@ class ShortcutService : AccessibilityService() {
         }
     }
 
-    // --- UPRAVENÝ VYKRESLOVAČ POLOŽEK (Podporuje obrázkové ikony i emoji) ---
     private fun addMenuItem(title: String, subtitle: String, imageIcon: Drawable?, emojiIcon: String, action: () -> Unit) {
         val ctx = resultsContainer?.context ?: return
         val itemLayout = LinearLayout(ctx).apply {
@@ -477,7 +485,6 @@ class ShortcutService : AccessibilityService() {
             setOnClickListener { action() }
         }
         
-        // Zobrazíme buď opravdovou ikonu, nebo Emoji
         if (imageIcon != null) {
             val imageView = ImageView(ctx).apply {
                 setImageDrawable(imageIcon)
@@ -485,7 +492,6 @@ class ShortcutService : AccessibilityService() {
             }
             itemLayout.addView(imageView)
             
-            // V blacklistu ukážeme k pravé ikoně ještě to červené/zelené kolečko
             if (emojiIcon == "🔴" || emojiIcon == "🟢") {
                  val statusIcon = TextView(ctx).apply {
                     text = emojiIcon
