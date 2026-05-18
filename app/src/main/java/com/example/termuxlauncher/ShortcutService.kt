@@ -13,8 +13,10 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.StatFs
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
@@ -26,6 +28,8 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.GridLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -33,6 +37,9 @@ import android.widget.TextClock
 import android.widget.TextView
 import android.widget.Toast
 import android.view.ContextThemeWrapper
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.concurrent.thread
 
 class ShortcutService : AccessibilityService() {
@@ -54,7 +61,7 @@ class ShortcutService : AccessibilityService() {
     private var currentResults = listOf<SearchResult>()
     private var spotlightInput: EditText? = null
     private var resultsContainer: LinearLayout? = null
-    private var widgetsContainer: LinearLayout? = null
+    private var widgetsScroll: HorizontalScrollView? = null
 
     data class SearchResult(val title: String, val subtitle: String, val icon: Drawable?, val emoji: String, val action: () -> Unit)
     data class AppItem(val name: String, val packageName: String, val icon: Drawable?)
@@ -70,7 +77,7 @@ class ShortcutService : AccessibilityService() {
         currentFps = prefs.getInt("fps", 30)
         blacklist = prefs.getStringSet("blacklist", mutableSetOf())?.toMutableSet() ?: mutableSetOf()
 
-        Toast.makeText(this, "MAC Spotlight: Plovoucí Widgety aktivovány!", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "MAC Spotlight 2.0: Auto-Hide Widgety!", Toast.LENGTH_SHORT).show()
         updateAppCache()
 
         val filter = IntentFilter().apply {
@@ -86,9 +93,25 @@ class ShortcutService : AccessibilityService() {
         try { unregisterReceiver(packageReceiver) } catch (e: Exception) {}
     }
 
+    // --- AUTO-HIDE LOGIKA: Zmizí, když otevřeš aplikaci! ---
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            event.packageName?.let { activePackage = it.toString() }
+            event.packageName?.let { 
+                activePackage = it.toString() 
+                
+                // Detekce, jestli jsi na ploše (Launcher) nebo v systémovém UI
+                val isDesktop = activePackage.contains("launcher", true) || 
+                                activePackage.contains("home", true) || 
+                                activePackage.contains("desktop", true) || 
+                                activePackage == "com.android.systemui"
+                
+                if (persistentWidget != null) {
+                    val mainHandler = Handler(Looper.getMainLooper())
+                    mainHandler.post {
+                        persistentWidget?.visibility = if (isDesktop) View.VISIBLE else View.GONE
+                    }
+                }
+            }
         }
     }
 
@@ -178,73 +201,92 @@ class ShortcutService : AccessibilityService() {
                 elevation = 40f
             }
 
-            widgetsContainer = LinearLayout(ctx).apply {
-                orientation = LinearLayout.HORIZONTAL
-                weightSum = 2f
+            // --- HORIZONTÁLNÍ SCROLL PRO WIDGETY V MENU ---
+            widgetsScroll = HorizontalScrollView(ctx).apply {
+                isHorizontalScrollBarEnabled = false
                 setPadding(0, 0, 0, 40)
             }
 
-            val clockWidget = LinearLayout(ctx).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER 
-                background = GradientDrawable().apply {
-                    cornerRadius = 32f
-                    setColor(Color.parseColor("#26FFFFFF"))
-                }
-                layoutParams = LinearLayout.LayoutParams(0, 250, 1f).apply { setMargins(0, 0, 20, 0) }
+            val widgetsContainer = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
             }
-            val timeText = TextClock(ctx).apply {
-                format12Hour = "HH:mm"
-                format24Hour = "HH:mm"
-                textSize = 34f 
-                setTextColor(Color.WHITE)
-                gravity = Gravity.CENTER 
-                setTypeface(null, android.graphics.Typeface.BOLD)
-            }
-            val dateText = TextClock(ctx).apply {
-                format12Hour = "EEEE, dd. MM."
-                format24Hour = "EEEE, dd. MM."
-                textSize = 14f
-                gravity = Gravity.CENTER 
-                setTextColor(Color.parseColor("#A0A0A0"))
-                setPadding(0, 10, 0, 0)
-            }
-            clockWidget.addView(timeText)
-            clockWidget.addView(dateText)
 
-            val batteryWidget = LinearLayout(ctx).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                background = GradientDrawable().apply {
-                    cornerRadius = 32f
-                    setColor(Color.parseColor("#26FFFFFF"))
+            // Pomocník na vytvoření MAC widget čtverce
+            val createMacSquare = { view: LinearLayout ->
+                view.apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    background = GradientDrawable().apply {
+                        cornerRadius = 32f
+                        setColor(Color.parseColor("#26FFFFFF"))
+                    }
+                    layoutParams = LinearLayout.LayoutParams(250, 250).apply { setMargins(0, 0, 20, 0) }
                 }
-                layoutParams = LinearLayout.LayoutParams(0, 250, 1f).apply { setMargins(20, 0, 0, 0) }
             }
-            
-            val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
-            val batLevel = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-            
-            val batIcon = TextView(ctx).apply {
-                text = if (batLevel > 20) "🔋 $batLevel %" else "🪫 $batLevel %"
-                textSize = 24f
-                gravity = Gravity.CENTER
-                setTextColor(if (batLevel > 20) Color.parseColor("#34C759") else Color.parseColor("#FF3B30"))
-                setTypeface(null, android.graphics.Typeface.BOLD)
-                setPadding(0, 0, 0, 10)
-            }
-            val devInfo = TextView(ctx).apply {
-                text = "Android ${Build.VERSION.RELEASE}"
-                textSize = 14f
-                gravity = Gravity.CENTER
-                setTextColor(Color.parseColor("#A0A0A0"))
-            }
-            batteryWidget.addView(batIcon)
-            batteryWidget.addView(devInfo)
 
-            widgetsContainer?.addView(clockWidget)
-            widgetsContainer?.addView(batteryWidget)
-            menuCard.addView(widgetsContainer)
+            // 1. Hodiny
+            val clockWidget = LinearLayout(ctx).let { createMacSquare(it) }.apply {
+                val timeText = TextClock(ctx).apply {
+                    format12Hour = "HH:mm"; format24Hour = "HH:mm"
+                    textSize = 34f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; setTypeface(null, android.graphics.Typeface.BOLD)
+                }
+                val dateText = TextClock(ctx).apply {
+                    format12Hour = "EEEE"; format24Hour = "EEEE"
+                    textSize = 14f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#A0A0A0")); setPadding(0, 10, 0, 0)
+                }
+                addView(timeText); addView(dateText)
+            }
+
+            // 2. MAC Kalendář
+            val calendarWidget = LinearLayout(ctx).let { createMacSquare(it) }.apply {
+                val monthText = TextView(ctx).apply {
+                    text = SimpleDateFormat("MMMM", Locale.getDefault()).format(Date()).uppercase()
+                    textSize = 14f; setTextColor(Color.parseColor("#FF3B30")); gravity = Gravity.CENTER; setTypeface(null, android.graphics.Typeface.BOLD)
+                }
+                val dayText = TextView(ctx).apply {
+                    text = SimpleDateFormat("d", Locale.getDefault()).format(Date())
+                    textSize = 42f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; setTypeface(null, android.graphics.Typeface.BOLD)
+                }
+                addView(monthText); addView(dayText)
+            }
+
+            // 3. Baterie
+            val batteryWidget = LinearLayout(ctx).let { createMacSquare(it) }.apply {
+                val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
+                val batLevel = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                val batIcon = TextView(ctx).apply {
+                    text = if (batLevel > 20) "🔋" else "🪫"
+                    textSize = 28f; gravity = Gravity.CENTER; setPadding(0, 0, 0, 10)
+                }
+                val bText = TextView(ctx).apply {
+                    text = "$batLevel %"
+                    textSize = 20f; gravity = Gravity.CENTER; setTextColor(if (batLevel > 20) Color.parseColor("#34C759") else Color.parseColor("#FF3B30")); setTypeface(null, android.graphics.Typeface.BOLD)
+                }
+                addView(batIcon); addView(bText)
+            }
+
+            // 4. Úložiště a RAM
+            val statWidget = LinearLayout(ctx).let { createMacSquare(it) }.apply {
+                val actManager = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                val memInfo = android.app.ActivityManager.MemoryInfo()
+                actManager.getMemoryInfo(memInfo)
+                val availRam = memInfo.availMem / 1073741824L
+
+                val statFs = StatFs(Environment.getExternalStorageDirectory().path)
+                val freeGb = statFs.availableBytes / 1073741824L
+
+                val ramText = TextView(ctx).apply { text = "🧠 RAM: ${availRam}GB"; textSize = 13f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; setPadding(0,0,0,10) }
+                val romText = TextView(ctx).apply { text = "💾 Disk: ${freeGb}GB"; textSize = 13f; setTextColor(Color.parseColor("#A0A0A0")); gravity = Gravity.CENTER }
+                addView(ramText); addView(romText)
+            }
+
+            widgetsContainer.addView(clockWidget)
+            widgetsContainer.addView(calendarWidget)
+            widgetsContainer.addView(batteryWidget)
+            widgetsContainer.addView(statWidget)
+
+            widgetsScroll?.addView(widgetsContainer)
+            menuCard.addView(widgetsScroll)
 
             val searchLayout = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -257,9 +299,7 @@ class ShortcutService : AccessibilityService() {
             }
 
             val searchIcon = TextView(ctx).apply {
-                text = "🔍 "
-                textSize = 22f
-                setTextColor(Color.parseColor("#8E8E93"))
+                text = "🔍 "; textSize = 22f; setTextColor(Color.parseColor("#8E8E93"))
             }
             searchLayout.addView(searchIcon)
 
@@ -276,9 +316,7 @@ class ShortcutService : AccessibilityService() {
             menuCard.addView(searchLayout)
 
             val divider = View(ctx).apply {
-                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 2).apply {
-                    setMargins(0, 40, 0, 20)
-                }
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 2).apply { setMargins(0, 40, 0, 20) }
                 setBackgroundColor(Color.parseColor("#33FFFFFF"))
             }
             menuCard.addView(divider)
@@ -317,7 +355,8 @@ class ShortcutService : AccessibilityService() {
                     val query = s.toString().lowercase().trim()
                     lastSearchRunnable?.let { mainHandler.removeCallbacks(it) }
 
-                    widgetsContainer?.visibility = if (query.isEmpty() && currentState == MenuState.MAIN) View.VISIBLE else View.GONE
+                    // Skrytí widgetů při psaní
+                    widgetsScroll?.visibility = if (query.isEmpty() && currentState == MenuState.MAIN) View.VISIBLE else View.GONE
 
                     val delayMs = 1000L / currentFps
 
@@ -393,11 +432,11 @@ class ShortcutService : AccessibilityService() {
 
     private fun showDefaultMenu() {
         currentState = MenuState.MAIN
-        widgetsContainer?.visibility = View.VISIBLE
+        widgetsScroll?.visibility = View.VISIBLE
         currentResults = emptyList()
         resultsContainer?.removeAllViews()
         
-        addMenuItem("Připnout widgety na plochu", "Trojklik nebo Pravý klik pro smazání", null, "📌") { 
+        addMenuItem("Mac Dashboard na plochu", "2x2 Widget (Zavírá se pravým/trojklikem)", null, "🖥️") { 
             spawnPersistentWidget()
             closeSpotlight()
         }
@@ -411,72 +450,67 @@ class ShortcutService : AccessibilityService() {
         }
     }
 
-    // ----- NOVÁ FUNKCE: MAC WIDGETY NA PLOCHU (Trojklik + Pravý klik) -----
+    // ----- PLOVOUCÍ DASHBOARD (2x2) S AUTO-HIDE DETEKCÍ -----
     private fun spawnPersistentWidget() {
         if (persistentWidget != null) return
 
         val ctx = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
         
-        val widgetContainer = LinearLayout(ctx).apply {
-            orientation = LinearLayout.HORIZONTAL
+        // Namísto řady vytvoříme krásný 2x2 Grid (Mac Dashboard)
+        val widgetContainer = GridLayout(ctx).apply {
+            columnCount = 2
+            rowCount = 2
             setPadding(10, 10, 10, 10)
         }
 
-        // Stylování MAC widgetů (skleněné zakulacené čtverce)
         val createMacSquare = { view: LinearLayout ->
             view.apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
                 background = GradientDrawable().apply {
-                    cornerRadius = 45f // Velmi zakulacené jako macOS
-                    setColor(Color.parseColor("#CC1A1A1A")) // Tmavý Glassmorphism
+                    cornerRadius = 45f 
+                    setColor(Color.parseColor("#CC1A1A1A")) 
                     setStroke(2, Color.parseColor("#44FFFFFF"))
                 }
-                layoutParams = LinearLayout.LayoutParams(260, 260).apply { setMargins(15, 15, 15, 15) }
+                layoutParams = GridLayout.LayoutParams().apply {
+                    width = 240
+                    height = 240
+                    setMargins(15, 15, 15, 15)
+                }
                 elevation = 20f
             }
         }
 
+        // 1. Hodiny
         val clockBox = LinearLayout(ctx).let { createMacSquare(it) }.apply {
-            val tText = TextClock(ctx).apply {
-                format12Hour = "HH:mm"
-                format24Hour = "HH:mm"
-                textSize = 36f
-                setTextColor(Color.WHITE)
-                setTypeface(null, android.graphics.Typeface.BOLD)
-            }
-            val dText = TextClock(ctx).apply {
-                format12Hour = "EEE d. MMM"
-                format24Hour = "EEE d. MMM"
-                textSize = 14f
-                setTextColor(Color.parseColor("#A0A0A0"))
-                setPadding(0, 10, 0, 0)
-            }
-            addView(tText)
-            addView(dText)
+            addView(TextClock(ctx).apply { format24Hour = "HH:mm"; textSize = 32f; setTextColor(Color.WHITE); setTypeface(null, android.graphics.Typeface.BOLD) })
+            addView(TextClock(ctx).apply { format24Hour = "EEEE"; textSize = 12f; setTextColor(Color.parseColor("#A0A0A0")); setPadding(0, 5, 0, 0) })
         }
 
-        val batteryBox = LinearLayout(ctx).let { createMacSquare(it) }.apply {
+        // 2. Kalendář
+        val calBox = LinearLayout(ctx).let { createMacSquare(it) }.apply {
+            addView(TextView(ctx).apply { text = SimpleDateFormat("MMM", Locale.getDefault()).format(Date()).uppercase(); textSize = 14f; setTextColor(Color.parseColor("#FF3B30")); setTypeface(null, android.graphics.Typeface.BOLD) })
+            addView(TextView(ctx).apply { text = SimpleDateFormat("d", Locale.getDefault()).format(Date()); textSize = 40f; setTextColor(Color.WHITE); setTypeface(null, android.graphics.Typeface.BOLD) })
+        }
+
+        // 3. Baterie
+        val battBox = LinearLayout(ctx).let { createMacSquare(it) }.apply {
             val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
             val batLvl = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-            
-            val bIcon = TextView(ctx).apply {
-                text = if (batLvl > 20) "🔋" else "🪫"
-                textSize = 34f
-                setPadding(0, 0, 0, 10)
-            }
-            val bText = TextView(ctx).apply {
-                text = "$batLvl %"
-                textSize = 22f
-                setTextColor(if (batLvl > 20) Color.parseColor("#34C759") else Color.parseColor("#FF3B30"))
-                setTypeface(null, android.graphics.Typeface.BOLD)
-            }
-            addView(bIcon)
-            addView(bText)
+            addView(TextView(ctx).apply { text = if (batLvl > 20) "🔋" else "🪫"; textSize = 28f; setPadding(0, 0, 0, 5) })
+            addView(TextView(ctx).apply { text = "$batLvl %"; textSize = 20f; setTextColor(if (batLvl > 20) Color.parseColor("#34C759") else Color.parseColor("#FF3B30")); setTypeface(null, android.graphics.Typeface.BOLD) })
+        }
+
+        // 4. Systém 
+        val statBox = LinearLayout(ctx).let { createMacSquare(it) }.apply {
+            addView(TextView(ctx).apply { text = "System OK"; textSize = 14f; setTextColor(Color.parseColor("#34C759")); setTypeface(null, android.graphics.Typeface.BOLD); setPadding(0, 0, 0, 10) })
+            addView(TextView(ctx).apply { text = "Mac UI"; textSize = 16f; setTextColor(Color.WHITE) })
         }
 
         widgetContainer.addView(clockBox)
-        widgetContainer.addView(batteryBox)
+        widgetContainer.addView(calBox)
+        widgetContainer.addView(battBox)
+        widgetContainer.addView(statBox)
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -485,12 +519,12 @@ class ShortcutService : AccessibilityService() {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            x = 100
-            y = 100
+            gravity = Gravity.TOP or Gravity.END // Zarovnáme na pravý okraj
+            x = 50
+            y = 50
         }
 
-        // LOGIKA PRO TROJKLIK A PRAVÉ TLAČÍTKO MYŠI
+        // TAHÁNÍ + PRAVÝ KLIK + TROJKLIK
         var clickCount = 0
         var lastClickTime = 0L
 
@@ -501,8 +535,6 @@ class ShortcutService : AccessibilityService() {
             private var initialTouchY = 0f
 
             override fun onTouch(v: View, event: MotionEvent): Boolean {
-                
-                // --- ZAVŘÍT POMOCÍ PRAVÉHO TLAČÍTKA MYŠI ---
                 if (event.buttonState == MotionEvent.BUTTON_SECONDARY || event.action == MotionEvent.ACTION_BUTTON_PRESS) {
                     removeWidget()
                     return true
@@ -510,40 +542,25 @@ class ShortcutService : AccessibilityService() {
 
                 when (event.action) {
                     MotionEvent.ACTION_DOWN -> {
-                        initialX = params.x
-                        initialY = params.y
-                        initialTouchX = event.rawX
-                        initialTouchY = event.rawY
+                        initialX = params.x; initialY = params.y; initialTouchX = event.rawX; initialTouchY = event.rawY
                         return true
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        val dx = event.rawX - initialTouchX
-                        val dy = event.rawY - initialTouchY
+                        val dx = event.rawX - initialTouchX; val dy = event.rawY - initialTouchY
                         if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
-                            params.x = initialX + dx.toInt()
+                            params.x = initialX - dx.toInt() // Mínus, protože gravity je END
                             params.y = initialY + dy.toInt()
                             windowManager?.updateViewLayout(widgetContainer, params)
                         }
                         return true
                     }
                     MotionEvent.ACTION_UP -> {
-                        val dx = Math.abs(event.rawX - initialTouchX)
-                        val dy = Math.abs(event.rawY - initialTouchY)
-                        
-                        // Bylo to kliknutí, ne posun
+                        val dx = Math.abs(event.rawX - initialTouchX); val dy = Math.abs(event.rawY - initialTouchY)
                         if (dx < 10 && dy < 10) {
                             val currentTime = System.currentTimeMillis()
-                            if (currentTime - lastClickTime < 400) { // Časové okno pro trojklik
-                                clickCount++
-                            } else {
-                                clickCount = 1
-                            }
+                            if (currentTime - lastClickTime < 400) clickCount++ else clickCount = 1
                             lastClickTime = currentTime
-
-                            // --- ZAVŘÍT POMOCÍ TROJKLIKU ---
-                            if (clickCount >= 3) {
-                                removeWidget()
-                            }
+                            if (clickCount >= 3) removeWidget()
                         }
                         return true
                     }
@@ -555,39 +572,19 @@ class ShortcutService : AccessibilityService() {
                 try {
                     windowManager?.removeView(persistentWidget)
                     persistentWidget = null
-                    Toast.makeText(this@ShortcutService, "Mac Widget odstraněn z plochy", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@ShortcutService, "Dashboard smazán", Toast.LENGTH_SHORT).show()
                 } catch (e: Exception) {}
             }
         })
 
-        // Tikátko na baterku
-        val handler = Handler(Looper.getMainLooper())
-        val battUpdater = object : Runnable {
-            override fun run() {
-                if (persistentWidget == null) return
-                val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
-                val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-                val bText = batteryBox.getChildAt(1) as TextView
-                val bIcon = batteryBox.getChildAt(0) as TextView
-                
-                bText.text = "$level %"
-                bText.setTextColor(if (level > 20) Color.parseColor("#34C759") else Color.parseColor("#FF3B30"))
-                bIcon.text = if (level > 20) "🔋" else "🪫"
-                
-                handler.postDelayed(this, 15000)
-            }
-        }
-        handler.post(battUpdater)
-
         persistentWidget = widgetContainer
         windowManager?.addView(widgetContainer, params)
-        Toast.makeText(this, "Mac Widget přidán! Tažením přesuň, TROJKLIKEM nebo PRAVÝM TLAČÍTKEM smaž.", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, "Mac Dashboard přidán! Při otevření aplikace se SÁM SCHOVÁ. Trojklik pro smazání.", Toast.LENGTH_LONG).show()
     }
-    // ----- KONEC NOVÉ FUNKCE -----
 
     private fun showSettingsSubmenu() {
         currentState = MenuState.SYS_SETTINGS
-        widgetsContainer?.visibility = View.GONE
+        widgetsScroll?.visibility = View.GONE
         changeTextSafely("")
         spotlightInput?.hint = "Hledat v nastavení..."
         resultsContainer?.removeAllViews()
@@ -606,7 +603,7 @@ class ShortcutService : AccessibilityService() {
 
     private fun showCustomSettings() {
         currentState = MenuState.SPOT_SETTINGS
-        widgetsContainer?.visibility = View.GONE
+        widgetsScroll?.visibility = View.GONE
         changeTextSafely("")
         spotlightInput?.hint = "Nastavení Spotlightu..."
         resultsContainer?.removeAllViews()
@@ -668,37 +665,18 @@ class ShortcutService : AccessibilityService() {
             itemLayout.addView(imageView)
             
             if (emojiIcon == "🔴" || emojiIcon == "🟢") {
-                 val statusIcon = TextView(ctx).apply {
-                    text = emojiIcon
-                    textSize = 20f
-                    setPadding(0, 0, 20, 0)
-                }
+                 val statusIcon = TextView(ctx).apply { text = emojiIcon; textSize = 20f; setPadding(0, 0, 20, 0) }
                 itemLayout.addView(statusIcon)
             }
         } else {
-            val iconView = TextView(ctx).apply {
-                text = emojiIcon
-                textSize = 24f
-                setPadding(0, 0, 30, 0)
-            }
+            val iconView = TextView(ctx).apply { text = emojiIcon; textSize = 24f; setPadding(0, 0, 30, 0) }
             itemLayout.addView(iconView)
         }
         
         val textLayout = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
-        val titleView = TextView(ctx).apply {
-            text = title
-            setTextColor(Color.WHITE)
-            textSize = 18f
-        }
-        textLayout.addView(titleView)
-        
+        textLayout.addView(TextView(ctx).apply { text = title; setTextColor(Color.WHITE); textSize = 18f })
         if (subtitle.isNotEmpty()) {
-            val subView = TextView(ctx).apply {
-                text = subtitle
-                setTextColor(Color.parseColor("#A0A0A0"))
-                textSize = 13f
-            }
-            textLayout.addView(subView)
+            textLayout.addView(TextView(ctx).apply { text = subtitle; setTextColor(Color.parseColor("#A0A0A0")); textSize = 13f })
         }
         
         itemLayout.addView(textLayout)
