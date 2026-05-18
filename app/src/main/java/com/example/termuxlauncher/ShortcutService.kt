@@ -162,10 +162,7 @@ class ShortcutService : AccessibilityService() {
             rootOverlay = FrameLayout(ctx).apply {
                 setBackgroundColor(Color.TRANSPARENT)
                 fitsSystemWindows = true 
-                
-                // OPRAVA USEKNUTÍ: Už žádný negativní topMargin. Jen pěkný vyvážený padding shora i zespoda
                 setPadding(0, 100, 0, 100) 
-                
                 setOnClickListener { closeSpotlight() }
             }
 
@@ -290,7 +287,6 @@ class ShortcutService : AccessibilityService() {
             val scroll = ScrollView(ctx).apply { addView(resultsContainer) }
             menuCard.addView(scroll)
 
-            // Tady zmizel ten zlý topMargin=-50 !
             val cardParams = FrameLayout.LayoutParams(1250, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.CENTER
             }
@@ -401,8 +397,7 @@ class ShortcutService : AccessibilityService() {
         currentResults = emptyList()
         resultsContainer?.removeAllViews()
         
-        // PŘIDÁNA NOVÁ FUNKCE PRO VYTÁHNUTÍ WIDGETU NA PLOCHU
-        addMenuItem("Připnout widgety na plochu", "Hodiny a baterie zůstanou trvale zobrazené", null, "📌") { 
+        addMenuItem("Připnout widgety na plochu", "Trojklik nebo Pravý klik pro smazání", null, "📌") { 
             spawnPersistentWidget()
             closeSpotlight()
         }
@@ -416,46 +411,72 @@ class ShortcutService : AccessibilityService() {
         }
     }
 
-    // ----- NOVÁ FUNKCE: TRVALÝ WIDGET NA PLOCHU -----
+    // ----- NOVÁ FUNKCE: MAC WIDGETY NA PLOCHU (Trojklik + Pravý klik) -----
     private fun spawnPersistentWidget() {
-        if (persistentWidget != null) {
-            windowManager?.removeView(persistentWidget)
-            persistentWidget = null
-        }
+        if (persistentWidget != null) return
 
         val ctx = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
-        val widgetCard = LinearLayout(ctx).apply {
+        
+        val widgetContainer = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(40, 30, 40, 30)
-            gravity = Gravity.CENTER_VERTICAL
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#E61C1C1E"))
-                cornerRadius = 40f
-                setStroke(2, Color.parseColor("#4DFFFFFF"))
+            setPadding(10, 10, 10, 10)
+        }
+
+        // Stylování MAC widgetů (skleněné zakulacené čtverce)
+        val createMacSquare = { view: LinearLayout ->
+            view.apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                background = GradientDrawable().apply {
+                    cornerRadius = 45f // Velmi zakulacené jako macOS
+                    setColor(Color.parseColor("#CC1A1A1A")) // Tmavý Glassmorphism
+                    setStroke(2, Color.parseColor("#44FFFFFF"))
+                }
+                layoutParams = LinearLayout.LayoutParams(260, 260).apply { setMargins(15, 15, 15, 15) }
+                elevation = 20f
             }
-            elevation = 30f
         }
 
-        val timeView = TextClock(ctx).apply {
-            format12Hour = "HH:mm"
-            format24Hour = "HH:mm"
-            textSize = 28f
-            setTextColor(Color.WHITE)
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setPadding(0, 0, 40, 0)
+        val clockBox = LinearLayout(ctx).let { createMacSquare(it) }.apply {
+            val tText = TextClock(ctx).apply {
+                format12Hour = "HH:mm"
+                format24Hour = "HH:mm"
+                textSize = 36f
+                setTextColor(Color.WHITE)
+                setTypeface(null, android.graphics.Typeface.BOLD)
+            }
+            val dText = TextClock(ctx).apply {
+                format12Hour = "EEE d. MMM"
+                format24Hour = "EEE d. MMM"
+                textSize = 14f
+                setTextColor(Color.parseColor("#A0A0A0"))
+                setPadding(0, 10, 0, 0)
+            }
+            addView(tText)
+            addView(dText)
         }
 
-        val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
-        val initialLevel = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        val battView = TextView(ctx).apply {
-            text = "🔋 $initialLevel %"
-            textSize = 20f
-            setTextColor(if (initialLevel > 20) Color.parseColor("#34C759") else Color.parseColor("#FF3B30"))
-            setTypeface(null, android.graphics.Typeface.BOLD)
+        val batteryBox = LinearLayout(ctx).let { createMacSquare(it) }.apply {
+            val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
+            val batLvl = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            
+            val bIcon = TextView(ctx).apply {
+                text = if (batLvl > 20) "🔋" else "🪫"
+                textSize = 34f
+                setPadding(0, 0, 0, 10)
+            }
+            val bText = TextView(ctx).apply {
+                text = "$batLvl %"
+                textSize = 22f
+                setTextColor(if (batLvl > 20) Color.parseColor("#34C759") else Color.parseColor("#FF3B30"))
+                setTypeface(null, android.graphics.Typeface.BOLD)
+            }
+            addView(bIcon)
+            addView(bText)
         }
 
-        widgetCard.addView(timeView)
-        widgetCard.addView(battView)
+        widgetContainer.addView(clockBox)
+        widgetContainer.addView(batteryBox)
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -465,18 +486,28 @@ class ShortcutService : AccessibilityService() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = 100 // Počáteční pozice
+            x = 100
             y = 100
         }
 
-        // TAŽENÍ MYŠÍ (DRAG AND DROP) PRO WIDGET!
-        widgetCard.setOnTouchListener(object : View.OnTouchListener {
+        // LOGIKA PRO TROJKLIK A PRAVÉ TLAČÍTKO MYŠI
+        var clickCount = 0
+        var lastClickTime = 0L
+
+        widgetContainer.setOnTouchListener(object : View.OnTouchListener {
             private var initialX = 0
             private var initialY = 0
             private var initialTouchX = 0f
             private var initialTouchY = 0f
 
             override fun onTouch(v: View, event: MotionEvent): Boolean {
+                
+                // --- ZAVŘÍT POMOCÍ PRAVÉHO TLAČÍTKA MYŠI ---
+                if (event.buttonState == MotionEvent.BUTTON_SECONDARY || event.action == MotionEvent.ACTION_BUTTON_PRESS) {
+                    removeWidget()
+                    return true
+                }
+
                 when (event.action) {
                     MotionEvent.ACTION_DOWN -> {
                         initialX = params.x
@@ -486,43 +517,71 @@ class ShortcutService : AccessibilityService() {
                         return true
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        params.x = initialX + (event.rawX - initialTouchX).toInt()
-                        params.y = initialY + (event.rawY - initialTouchY).toInt()
-                        windowManager?.updateViewLayout(widgetCard, params)
+                        val dx = event.rawX - initialTouchX
+                        val dy = event.rawY - initialTouchY
+                        if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+                            params.x = initialX + dx.toInt()
+                            params.y = initialY + dy.toInt()
+                            windowManager?.updateViewLayout(widgetContainer, params)
+                        }
                         return true
                     }
                     MotionEvent.ACTION_UP -> {
-                        // Pokud jsi widgetem nepohnul o víc jak pár pixelů = bylo to kliknutí pro smazání
-                        val diffX = Math.abs(event.rawX - initialTouchX)
-                        val diffY = Math.abs(event.rawY - initialTouchY)
-                        if (diffX < 10 && diffY < 10) {
-                            windowManager?.removeView(persistentWidget)
-                            persistentWidget = null
-                            Toast.makeText(this@ShortcutService, "Widget odstraněn z plochy", Toast.LENGTH_SHORT).show()
+                        val dx = Math.abs(event.rawX - initialTouchX)
+                        val dy = Math.abs(event.rawY - initialTouchY)
+                        
+                        // Bylo to kliknutí, ne posun
+                        if (dx < 10 && dy < 10) {
+                            val currentTime = System.currentTimeMillis()
+                            if (currentTime - lastClickTime < 400) { // Časové okno pro trojklik
+                                clickCount++
+                            } else {
+                                clickCount = 1
+                            }
+                            lastClickTime = currentTime
+
+                            // --- ZAVŘÍT POMOCÍ TROJKLIKU ---
+                            if (clickCount >= 3) {
+                                removeWidget()
+                            }
                         }
                         return true
                     }
                 }
                 return false
             }
+
+            private fun removeWidget() {
+                try {
+                    windowManager?.removeView(persistentWidget)
+                    persistentWidget = null
+                    Toast.makeText(this@ShortcutService, "Mac Widget odstraněn z plochy", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {}
+            }
         })
 
-        // Tikátko baterie pro widget na ploše (Čas se aktualizuje sám v TextClock)
+        // Tikátko na baterku
         val handler = Handler(Looper.getMainLooper())
         val battUpdater = object : Runnable {
             override fun run() {
                 if (persistentWidget == null) return
+                val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
                 val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-                battView.text = "🔋 $level %"
-                battView.setTextColor(if (level > 20) Color.parseColor("#34C759") else Color.parseColor("#FF3B30"))
-                handler.postDelayed(this, 15000) // Každých 15s kontrola baterky
+                val bText = batteryBox.getChildAt(1) as TextView
+                val bIcon = batteryBox.getChildAt(0) as TextView
+                
+                bText.text = "$level %"
+                bText.setTextColor(if (level > 20) Color.parseColor("#34C759") else Color.parseColor("#FF3B30"))
+                bIcon.text = if (level > 20) "🔋" else "🪫"
+                
+                handler.postDelayed(this, 15000)
             }
         }
         handler.post(battUpdater)
 
-        persistentWidget = widgetCard
-        windowManager?.addView(widgetCard, params)
-        Toast.makeText(this, "Widget přidán! Tažením myši jej přesuneš, KLIKNUTÍM JEJ SMAŽEŠ.", Toast.LENGTH_LONG).show()
+        persistentWidget = widgetContainer
+        windowManager?.addView(widgetContainer, params)
+        Toast.makeText(this, "Mac Widget přidán! Tažením přesuň, TROJKLIKEM nebo PRAVÝM TLAČÍTKEM smaž.", Toast.LENGTH_LONG).show()
     }
     // ----- KONEC NOVÉ FUNKCE -----
 
