@@ -78,12 +78,11 @@ class ShortcutService : AccessibilityService() {
         currentFps = prefs.getInt("fps", 30)
         blacklist = prefs.getStringSet("blacklist", mutableSetOf())?.toMutableSet() ?: mutableSetOf()
         
-        // Výchozí widgety, pokud ještě nebyly nastaveny
         if (!prefs.contains("active_widgets")) {
             prefs.edit().putStringSet("active_widgets", setOf("clock", "battery")).apply()
         }
 
-        Toast.makeText(this, "MAC Spotlight: Widget Manager & PC Fix!", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "MAC Spotlight spuštěn!", Toast.LENGTH_SHORT).show()
         updateAppCache()
 
         val filter = IntentFilter().apply {
@@ -99,20 +98,14 @@ class ShortcutService : AccessibilityService() {
         try { unregisterReceiver(packageReceiver) } catch (e: Exception) {}
     }
 
-    // --- OPRAVENÁ AUTO-HIDE LOGIKA PRO PC REŽIM ---
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val type = event?.eventType
-        // Reagujeme na jakoukoliv změnu oken nebo kliknutí, aby minimalizace oken fungovala bleskově
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || type == AccessibilityEvent.TYPE_WINDOWS_CHANGED || type == AccessibilityEvent.TYPE_VIEW_CLICKED) {
             event?.packageName?.let { 
                 val pkg = it.toString()
-                
-                // Nechceme se schovat kvůli sobě
                 if (pkg != "com.example.termuxlauncher") {
                     activePackage = pkg
                 }
-                
-                // Přidáno "systemui" - to je taskbar v DeXu/PC režimu. Když minimalizuješ kliknutím, aktivuje se systemui.
                 val isDesktop = activePackage.contains("launcher", true) || 
                                 activePackage.contains("home", true) || 
                                 activePackage.contains("desktop", true) || 
@@ -158,7 +151,7 @@ class ShortcutService : AccessibilityService() {
         if (event.keyCode == KeyEvent.KEYCODE_ENTER && isShift) {
             if (event.action == KeyEvent.ACTION_DOWN) {
                 if (activePackage in blacklist) {
-                    Toast.makeText(this, "Spotlight je zde zakázán!", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Spotlight zakázán!", Toast.LENGTH_SHORT).show()
                 } else {
                     toggleSpotlight()
                 }
@@ -224,7 +217,6 @@ class ShortcutService : AccessibilityService() {
                 orientation = LinearLayout.HORIZONTAL
             }
 
-            // --- VYSOCE CENTROVANÉ WIDGETY PRO SPOTLIGHT ---
             val activeWidgets = prefs.getStringSet("active_widgets", setOf("clock", "battery"))!!
             
             if (activeWidgets.contains("clock")) widgetsContainer.addView(createClockWidget(ctx, false))
@@ -310,11 +302,9 @@ class ShortcutService : AccessibilityService() {
                     lastSearchRunnable = Runnable {
                         if (currentState == MenuState.BLACKLIST) { renderBlacklist(query); return@Runnable }
                         
-                        // Zpracování ukládání vlastní poznámky!
                         if (currentState == MenuState.WIDGET_SETTINGS) {
                             if (query.isNotEmpty()) {
                                 prefs.edit().putString("custom_note_text", s.toString()).apply()
-                                // Pokud je poznámka prázdná, renderujeme menu, jinak ji necháme psát
                             }
                             renderWidgetSettings()
                             return@Runnable
@@ -401,13 +391,11 @@ class ShortcutService : AccessibilityService() {
         addMenuItem("Spotlight Nastavení", "Rychlost (FPS) a Zakázané aplikace", null, "🛠️") { showCustomSettings() }
     }
 
-    // --- WIDGET MANAGER ---
     private fun renderWidgetSettings() {
         resultsContainer?.removeAllViews()
         widgetsScroll?.visibility = View.GONE
         
         addMenuItem("◄ Zpět na Spotlight", "Vrátí se do hlavního menu (uloží úpravy)", null, "↩️") { 
-            // Pokud měl plovoucí widget otevřený, rovnou mu ho obnovíme
             if (persistentWidget != null) { spawnPersistentWidget() }
             showDefaultMenu() 
         }
@@ -428,14 +416,13 @@ class ShortcutService : AccessibilityService() {
         toggleWidget("calendar", "Kalendář", "📅")
         toggleWidget("battery", "Stav Baterie", "🔋")
         toggleWidget("system", "RAM a Úložiště", "💾")
-        toggleWidget("custom", "Moje Poznámka (Napiš text do vyhledávání!)", "📝")
+        toggleWidget("custom", "Moje Poznámka (Napiš text do vyhledávání nahoře!)", "📝")
     }
 
-    // --- DOKONALE VYCENTROVANÉ GENERÁTORY WIDGETŮ ---
     private fun getMacSquare(ctx: Context, isDesktop: Boolean): LinearLayout {
         return LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER // Tohle zaručí dokonalý střed!
+            gravity = Gravity.CENTER 
             background = GradientDrawable().apply {
                 cornerRadius = if (isDesktop) 45f else 32f
                 setColor(if (isDesktop) Color.parseColor("#CC1A1A1A") else Color.parseColor("#26FFFFFF"))
@@ -448,10 +435,16 @@ class ShortcutService : AccessibilityService() {
         }
     }
 
-    private fun createClockWidget(ctx: Cotext, isDesktop: Boolean): LinearLayout {
+    private fun createClockWidget(ctx: Context, isDesktop: Boolean): LinearLayout {
+        return getMacSquare(ctx, isDesktop).apply {
+            addView(TextClock(ctx).apply { format24Hour = "HH:mm"; textSize = 34f; setTextColor(Color.WHITE); setTypeface(null, android.graphics.Typeface.BOLD); gravity = Gravity.CENTER })
+            addView(TextClock(ctx).apply { format24Hour = "EEEE"; textSize = 13f; setTextColor(Color.parseColor("#A0A0A0")); setPadding(0, 5, 0, 0); gravity = Gravity.CENTER })
+        }
+    }
+
+    private fun createCalendarWidget(ctx: Context, isDesktop: Boolean): LinearLayout {
         return getMacSquare(ctx, isDesktop).apply {
             addView(TextView(ctx).apply { text = SimpleDateFormat("MMM", Locale.getDefault()).format(Date()).uppercase(); textSize = 15f; setTextColor(Color.parseColor("#FF3B30")); setTypeface(null, android.graphics.Typeface.BOLD); gravity = Gravity.CENTER })
-            addView(TextView(ctx).apply { text = SimpleDateFormat("d", Locale.getDefault()).format(Date()); textSize = 42f; setTextColor(Color.WHITE); setTypeface(null, android.graphics.Typeface.BOLD); gravity = Gravity.CENTER })
         }
     }
 
@@ -460,7 +453,6 @@ class ShortcutService : AccessibilityService() {
             val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
             val batLvl = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
             
-            // OPRAVA 2: DETEKCE NABÍJENÍ
             val status = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS)
             val isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
             
@@ -487,16 +479,14 @@ class ShortcutService : AccessibilityService() {
         }
     }
 
-    // NOVÝ CUSTOM WIDGET (MOJE POZNÁMKA)
     private fun createCustomNoteWidget(ctx: Context, isDesktop: Boolean): LinearLayout {
         return getMacSquare(ctx, isDesktop).apply {
             val noteText = prefs.getString("custom_note_text", "📝 Napiš něco do hledání!")
             addView(TextView(ctx).apply { text = "Poznámka"; textSize = 12f; setTextColor(Color.parseColor("#8E8E93")); gravity = Gravity.CENTER; setTypeface(null, android.graphics.Typeface.BOLD); setPadding(0,0,0,10) })
-            addView(TextView(ctx).apply { text = noteText; textSize = 16f; setTextColor(Color.CYAN); gravity = Gravity.CENTER })
+            addView(TextView(ctx).apply { text = noteText; textSize = 16f; setTextColor(Color.CYAN); gravity = Gravity.CENTER; setPadding(10,0,10,0) })
         }
     }
 
-    // ----- PLOVOUCÍ DASHBOARD (PC WIDGET) -----
     private fun spawnPersistentWidget() {
         if (persistentWidget != null) {
             windowManager?.removeView(persistentWidget)
@@ -506,7 +496,6 @@ class ShortcutService : AccessibilityService() {
         val ctx = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
         val activeWidgets = prefs.getStringSet("active_widgets", setOf("clock", "battery"))!!
 
-        // Dynamická Grid tabulka podle toho, kolik máš widgetů
         val widgetContainer = GridLayout(ctx).apply {
             columnCount = if (activeWidgets.size > 2) 2 else activeWidgets.size
             rowCount = (activeWidgets.size + 1) / 2
@@ -579,16 +568,14 @@ class ShortcutService : AccessibilityService() {
             }
         })
 
-        // Obnovování baterie a času
         val handler = Handler(Looper.getMainLooper())
         val updater = object : Runnable {
             override fun run() {
                 if (persistentWidget == null) return
-                // Prostě ho celý přerenderujeme (nejspolehlivější pro Custom text i baterii)
                 spawnPersistentWidget() 
             }
         }
-        handler.postDelayed(updater, 30000) // Každých 30s se to na ploše samo aktualizuje
+        handler.postDelayed(updater, 30000)
 
         persistentWidget = widgetContainer
         windowManager?.addView(widgetContainer, params)
