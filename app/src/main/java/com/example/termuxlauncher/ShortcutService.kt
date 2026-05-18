@@ -20,6 +20,7 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
@@ -38,6 +39,7 @@ class ShortcutService : AccessibilityService() {
 
     private var windowManager: WindowManager? = null
     private var rootOverlay: FrameLayout? = null
+    private var persistentWidget: View? = null // Plovoucí widget
     private var cachedApps: List<AppItem> = emptyList()
 
     private lateinit var prefs: SharedPreferences
@@ -68,7 +70,7 @@ class ShortcutService : AccessibilityService() {
         currentFps = prefs.getInt("fps", 30)
         blacklist = prefs.getStringSet("blacklist", mutableSetOf())?.toMutableSet() ?: mutableSetOf()
 
-        Toast.makeText(this, "MAC Spotlight: Plovoucí PC Widget Mode!", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "MAC Spotlight: Plovoucí Widgety aktivovány!", Toast.LENGTH_SHORT).show()
         updateAppCache()
 
         val filter = IntentFilter().apply {
@@ -157,12 +159,12 @@ class ShortcutService : AccessibilityService() {
             windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
             val ctx = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
             
-            // OPRAVA 1: ZRUŠENÍ TEMNÉHO POZADÍ! Nyní je to čisté průhledné okno na plochu.
             rootOverlay = FrameLayout(ctx).apply {
                 setBackgroundColor(Color.TRANSPARENT)
+                fitsSystemWindows = true 
                 
-                // Mírný padding, aby se to nedotýkalo okrajů obrazovky
-                setPadding(0, 50, 0, 100) 
+                // OPRAVA USEKNUTÍ: Už žádný negativní topMargin. Jen pěkný vyvážený padding shora i zespoda
+                setPadding(0, 100, 0, 100) 
                 
                 setOnClickListener { closeSpotlight() }
             }
@@ -171,14 +173,11 @@ class ShortcutService : AccessibilityService() {
                 orientation = LinearLayout.VERTICAL
                 background = GradientDrawable().apply {
                     cornerRadius = 40f 
-                    // Je to jen skleněný panel, nemá za sebou stín přes celou obrazovku
-                    setColor(Color.parseColor("#F21C1C1E")) // Trochu méně průhledné, aby to bylo čitelné nad bílými okny
+                    setColor(Color.parseColor("#F21C1C1E")) 
                     setStroke(2, Color.parseColor("#4DFFFFFF")) 
                 }
                 isClickable = true 
                 setPadding(50, 50, 50, 50)
-                
-                // OPRAVA 2: Stín (Elevation) pro to správné 3D oddělení od ostatních oken
                 elevation = 40f
             }
 
@@ -291,9 +290,9 @@ class ShortcutService : AccessibilityService() {
             val scroll = ScrollView(ctx).apply { addView(resultsContainer) }
             menuCard.addView(scroll)
 
+            // Tady zmizel ten zlý topMargin=-50 !
             val cardParams = FrameLayout.LayoutParams(1250, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.CENTER
-                topMargin = -50 
             }
             rootOverlay?.addView(menuCard, cardParams)
 
@@ -380,7 +379,6 @@ class ShortcutService : AccessibilityService() {
                 }
             })
 
-            // OPRAVA 3: OKNO UŽ NENÍ FULLSCREEN, NESCHOVÁVÁ LIŠTU.
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT, 
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -403,6 +401,11 @@ class ShortcutService : AccessibilityService() {
         currentResults = emptyList()
         resultsContainer?.removeAllViews()
         
+        // PŘIDÁNA NOVÁ FUNKCE PRO VYTÁHNUTÍ WIDGETU NA PLOCHU
+        addMenuItem("Připnout widgety na plochu", "Hodiny a baterie zůstanou trvale zobrazené", null, "📌") { 
+            spawnPersistentWidget()
+            closeSpotlight()
+        }
         addMenuItem("Systémové předvolby", "Wi-Fi, Bluetooth, Displej...", null, "⚙️") { showSettingsSubmenu() }
         addMenuItem("Spotlight Nastavení", "Rychlost (FPS) a Zakázané aplikace", null, "🛠️") { showCustomSettings() }
         addMenuItem("App Store", "Nainstalovat nové aplikace", null, "🛍️") {
@@ -412,6 +415,116 @@ class ShortcutService : AccessibilityService() {
             } catch (e: Exception) {}
         }
     }
+
+    // ----- NOVÁ FUNKCE: TRVALÝ WIDGET NA PLOCHU -----
+    private fun spawnPersistentWidget() {
+        if (persistentWidget != null) {
+            windowManager?.removeView(persistentWidget)
+            persistentWidget = null
+        }
+
+        val ctx = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
+        val widgetCard = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(40, 30, 40, 30)
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#E61C1C1E"))
+                cornerRadius = 40f
+                setStroke(2, Color.parseColor("#4DFFFFFF"))
+            }
+            elevation = 30f
+        }
+
+        val timeView = TextClock(ctx).apply {
+            format12Hour = "HH:mm"
+            format24Hour = "HH:mm"
+            textSize = 28f
+            setTextColor(Color.WHITE)
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setPadding(0, 0, 40, 0)
+        }
+
+        val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
+        val initialLevel = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val battView = TextView(ctx).apply {
+            text = "🔋 $initialLevel %"
+            textSize = 20f
+            setTextColor(if (initialLevel > 20) Color.parseColor("#34C759") else Color.parseColor("#FF3B30"))
+            setTypeface(null, android.graphics.Typeface.BOLD)
+        }
+
+        widgetCard.addView(timeView)
+        widgetCard.addView(battView)
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 100 // Počáteční pozice
+            y = 100
+        }
+
+        // TAŽENÍ MYŠÍ (DRAG AND DROP) PRO WIDGET!
+        widgetCard.setOnTouchListener(object : View.OnTouchListener {
+            private var initialX = 0
+            private var initialY = 0
+            private var initialTouchX = 0f
+            private var initialTouchY = 0f
+
+            override fun onTouch(v: View, event: MotionEvent): Boolean {
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        initialX = params.x
+                        initialY = params.y
+                        initialTouchX = event.rawX
+                        initialTouchY = event.rawY
+                        return true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        params.x = initialX + (event.rawX - initialTouchX).toInt()
+                        params.y = initialY + (event.rawY - initialTouchY).toInt()
+                        windowManager?.updateViewLayout(widgetCard, params)
+                        return true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        // Pokud jsi widgetem nepohnul o víc jak pár pixelů = bylo to kliknutí pro smazání
+                        val diffX = Math.abs(event.rawX - initialTouchX)
+                        val diffY = Math.abs(event.rawY - initialTouchY)
+                        if (diffX < 10 && diffY < 10) {
+                            windowManager?.removeView(persistentWidget)
+                            persistentWidget = null
+                            Toast.makeText(this@ShortcutService, "Widget odstraněn z plochy", Toast.LENGTH_SHORT).show()
+                        }
+                        return true
+                    }
+                }
+                return false
+            }
+        })
+
+        // Tikátko baterie pro widget na ploše (Čas se aktualizuje sám v TextClock)
+        val handler = Handler(Looper.getMainLooper())
+        val battUpdater = object : Runnable {
+            override fun run() {
+                if (persistentWidget == null) return
+                val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                battView.text = "🔋 $level %"
+                battView.setTextColor(if (level > 20) Color.parseColor("#34C759") else Color.parseColor("#FF3B30"))
+                handler.postDelayed(this, 15000) // Každých 15s kontrola baterky
+            }
+        }
+        handler.post(battUpdater)
+
+        persistentWidget = widgetCard
+        windowManager?.addView(widgetCard, params)
+        Toast.makeText(this, "Widget přidán! Tažením myši jej přesuneš, KLIKNUTÍM JEJ SMAŽEŠ.", Toast.LENGTH_LONG).show()
+    }
+    // ----- KONEC NOVÉ FUNKCE -----
 
     private fun showSettingsSubmenu() {
         currentState = MenuState.SYS_SETTINGS
@@ -548,7 +661,7 @@ class ShortcutService : AccessibilityService() {
                 val options = android.app.ActivityOptions.makeBasic()
                 try {
                     val method = options.javaClass.getMethod("setLaunchWindowingMode", Int::class.java)
-                    method.invoke(options, 5) // Mode 5 je Freeform/PC mode!
+                    method.invoke(options, 5)
                 } catch (e: Exception) {}
                 startActivity(intent, options.toBundle())
             }
