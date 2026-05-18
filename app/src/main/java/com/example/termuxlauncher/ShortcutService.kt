@@ -68,7 +68,7 @@ class ShortcutService : AccessibilityService() {
         currentFps = prefs.getInt("fps", 30)
         blacklist = prefs.getStringSet("blacklist", mutableSetOf())?.toMutableSet() ?: mutableSetOf()
 
-        Toast.makeText(this, "MAC Spotlight (Fix taskbaru & hodin)!", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "MAC Spotlight: Plovoucí PC Widget Mode!", Toast.LENGTH_SHORT).show()
         updateAppCache()
 
         val filter = IntentFilter().apply {
@@ -157,11 +157,12 @@ class ShortcutService : AccessibilityService() {
             windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
             val ctx = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
             
+            // OPRAVA 1: ZRUŠENÍ TEMNÉHO POZADÍ! Nyní je to čisté průhledné okno na plochu.
             rootOverlay = FrameLayout(ctx).apply {
-                setBackgroundColor(Color.parseColor("#40000000")) 
+                setBackgroundColor(Color.TRANSPARENT)
                 
-                // OPRAVA 1: FitsSystemWindows způsobí, že okno nezasahuje do systémových lišt!
-                fitsSystemWindows = true 
+                // Mírný padding, aby se to nedotýkalo okrajů obrazovky
+                setPadding(0, 50, 0, 100) 
                 
                 setOnClickListener { closeSpotlight() }
             }
@@ -170,11 +171,15 @@ class ShortcutService : AccessibilityService() {
                 orientation = LinearLayout.VERTICAL
                 background = GradientDrawable().apply {
                     cornerRadius = 40f 
-                    setColor(Color.parseColor("#E61C1C1E")) 
-                    setStroke(2, Color.parseColor("#33FFFFFF")) 
+                    // Je to jen skleněný panel, nemá za sebou stín přes celou obrazovku
+                    setColor(Color.parseColor("#F21C1C1E")) // Trochu méně průhledné, aby to bylo čitelné nad bílými okny
+                    setStroke(2, Color.parseColor("#4DFFFFFF")) 
                 }
                 isClickable = true 
                 setPadding(50, 50, 50, 50)
+                
+                // OPRAVA 2: Stín (Elevation) pro to správné 3D oddělení od ostatních oken
+                elevation = 40f
             }
 
             widgetsContainer = LinearLayout(ctx).apply {
@@ -183,10 +188,9 @@ class ShortcutService : AccessibilityService() {
                 setPadding(0, 0, 0, 40)
             }
 
-            // --- OPRAVENÉ HODINY (Přesně na střed) ---
             val clockWidget = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER // Celý box se vycentruje
+                gravity = Gravity.CENTER 
                 background = GradientDrawable().apply {
                     cornerRadius = 32f
                     setColor(Color.parseColor("#26FFFFFF"))
@@ -196,16 +200,16 @@ class ShortcutService : AccessibilityService() {
             val timeText = TextClock(ctx).apply {
                 format12Hour = "HH:mm"
                 format24Hour = "HH:mm"
-                textSize = 34f // Mírně zvětšeno
+                textSize = 34f 
                 setTextColor(Color.WHITE)
-                gravity = Gravity.CENTER // Text se vycentruje i uvnitř vlastního rámečku
+                gravity = Gravity.CENTER 
                 setTypeface(null, android.graphics.Typeface.BOLD)
             }
             val dateText = TextClock(ctx).apply {
                 format12Hour = "EEEE, dd. MM."
                 format24Hour = "EEEE, dd. MM."
                 textSize = 14f
-                gravity = Gravity.CENTER // I datum na střed
+                gravity = Gravity.CENTER 
                 setTextColor(Color.parseColor("#A0A0A0"))
                 setPadding(0, 10, 0, 0)
             }
@@ -289,7 +293,7 @@ class ShortcutService : AccessibilityService() {
 
             val cardParams = FrameLayout.LayoutParams(1250, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
                 gravity = Gravity.CENTER
-                topMargin = -100 // Vynese to trochu výš, aby se pod to vešla klávesnice/taskbar
+                topMargin = -50 
             }
             rootOverlay?.addView(menuCard, cardParams)
 
@@ -376,15 +380,14 @@ class ShortcutService : AccessibilityService() {
                 }
             })
 
-            // OPRAVA 2: PARAMETRY OKNA UPRAVENY, ABY NENIČILY TASKBAR
+            // OPRAVA 3: OKNO UŽ NENÍ FULLSCREEN, NESCHOVÁVÁ LIŠTU.
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT, 
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
                 PixelFormat.TRANSLUCENT
             ).apply {
-                // Toto přikáže oknu, aby se přizpůsobilo klávesnici a navigační liště
                 softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
             }
 
@@ -545,7 +548,7 @@ class ShortcutService : AccessibilityService() {
                 val options = android.app.ActivityOptions.makeBasic()
                 try {
                     val method = options.javaClass.getMethod("setLaunchWindowingMode", Int::class.java)
-                    method.invoke(options, 5)
+                    method.invoke(options, 5) // Mode 5 je Freeform/PC mode!
                 } catch (e: Exception) {}
                 startActivity(intent, options.toBundle())
             }
