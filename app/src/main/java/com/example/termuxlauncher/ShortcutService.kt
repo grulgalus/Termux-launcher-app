@@ -82,7 +82,7 @@ class ShortcutService : AccessibilityService() {
             prefs.edit().putStringSet("active_widgets", setOf("clock", "battery")).apply()
         }
 
-        Toast.makeText(this, "MAC Spotlight spuštěn!", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "MAC Spotlight: Přidána klávesa CTRL+TAB", Toast.LENGTH_SHORT).show()
         updateAppCache()
 
         val filter = IntentFilter().apply {
@@ -139,15 +139,28 @@ class ShortcutService : AccessibilityService() {
         }
     }
 
+    // --- KLÁVESOVÉ ZKRATKY ---
     override fun onKeyEvent(event: KeyEvent): Boolean {
         val isShift = event.isShiftPressed
         val isOption = event.isAltPressed || event.isMetaPressed
+        val isCtrl = event.isCtrlPressed // Detekce CTRL klávesy
 
+        // 1. ZAVŘENÍ SPOTLIGHTU (ESC)
         if (rootOverlay != null && event.keyCode == KeyEvent.KEYCODE_ESCAPE) {
             if (event.action == KeyEvent.ACTION_DOWN) closeSpotlight()
             return true
         }
 
+        // 2. NOVINKA: OTEVŘÍT NEDÁVNÉ APLIKACE (CTRL + TAB)
+        if (event.keyCode == KeyEvent.KEYCODE_TAB && isCtrl) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                // Vyvolá systémové okno přepínání aplikací!
+                performGlobalAction(GLOBAL_ACTION_RECENTS)
+            }
+            return true
+        }
+
+        // 3. OTEVŘÍT SPOTLIGHT (SHIFT + ENTER)
         if (event.keyCode == KeyEvent.KEYCODE_ENTER && isShift) {
             if (event.action == KeyEvent.ACTION_DOWN) {
                 if (activePackage in blacklist) {
@@ -159,6 +172,7 @@ class ShortcutService : AccessibilityService() {
             return true
         }
 
+        // 4. OTEVŘÍT TERMUX (ALT/OPTION + T)
         if (event.keyCode == KeyEvent.KEYCODE_T && isOption) {
             if (event.action == KeyEvent.ACTION_DOWN) {
                 if (activePackage !in blacklist) {
@@ -445,6 +459,7 @@ class ShortcutService : AccessibilityService() {
     private fun createCalendarWidget(ctx: Context, isDesktop: Boolean): LinearLayout {
         return getMacSquare(ctx, isDesktop).apply {
             addView(TextView(ctx).apply { text = SimpleDateFormat("MMM", Locale.getDefault()).format(Date()).uppercase(); textSize = 15f; setTextColor(Color.parseColor("#FF3B30")); setTypeface(null, android.graphics.Typeface.BOLD); gravity = Gravity.CENTER })
+            addView(TextView(ctx).apply { text = SimpleDateFormat("d", Locale.getDefault()).format(Date()); textSize = 42f; setTextColor(Color.WHITE); setTypeface(null, android.graphics.Typeface.BOLD); gravity = Gravity.CENTER })
         }
     }
 
