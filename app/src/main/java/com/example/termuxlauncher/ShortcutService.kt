@@ -50,6 +50,12 @@ class ShortcutService : AccessibilityService() {
     private var persistentWidget: View? = null 
     private var cachedApps: List<AppItem> = emptyList()
 
+    // --- MAC APP SWITCHER PROMĚNNÉ ---
+    private var recentApps = mutableListOf<AppItem>()
+    private var appSwitcherLayout: FrameLayout? = null
+    private var appSwitcherIndex = 0
+    private var appSwitcherViews = mutableListOf<LinearLayout>()
+
     private lateinit var prefs: SharedPreferences
     private var currentFps = 10
     private var blacklist = mutableSetOf<String>()
@@ -82,7 +88,7 @@ class ShortcutService : AccessibilityService() {
             prefs.edit().putStringSet("active_widgets", setOf("clock", "battery")).apply()
         }
 
-        Toast.makeText(this, "MAC Spotlight: Přidána klávesa CTRL+TAB", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "MAC UI + Vlastní App Switcher spuštěn!", Toast.LENGTH_SHORT).show()
         updateAppCache()
 
         val filter = IntentFilter().apply {
@@ -103,6 +109,19 @@ class ShortcutService : AccessibilityService() {
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || type == AccessibilityEvent.TYPE_WINDOWS_CHANGED || type == AccessibilityEvent.TYPE_VIEW_CLICKED) {
             event?.packageName?.let { 
                 val pkg = it.toString()
+                
+                // TRACKOVÁNÍ NEDÁVNÝCH APLIKACÍ (pro Mac App Switcher)
+                if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                    if (pkg != "com.example.termuxlauncher" && pkg != "com.android.systemui" && !pkg.contains("launcher", true)) {
+                        val appItem = cachedApps.find { app -> app.packageName == pkg }
+                        if (appItem != null) {
+                            recentApps.remove(appItem) // Smaže ze staré pozice
+                            recentApps.add(0, appItem) // Přidá na začátek (nejnovější)
+                            if (recentApps.size > 8) recentApps.removeAt(recentApps.size - 1) // Max 8 aplikací v menu
+                        }
+                    }
+                }
+
                 if (pkg != "com.example.termuxlauncher") {
                     activePackage = pkg
                 }
@@ -136,49 +155,57 @@ class ShortcutService : AccessibilityService() {
                 }
             }
             cachedApps = temp.sortedBy { it.name.lowercase() }
+            
+            // Pokud je list nedávných prázdný, nacpeme tam 5 náhodných apek, ať to na začátku není prázdné
+            if (recentApps.isEmpty() && cachedApps.size >= 5) {
+                recentApps.addAll(cachedApps.shuffled().take(5))
+            }
         }
     }
 
-    // --- KLÁVESOVÉ ZKRATKY ---
+    // --- KLÁVESOVÉ ZKRATKY A APP SWITCHER ---
     override fun onKeyEvent(event: KeyEvent): Boolean {
         val isShift = event.isShiftPressed
-        val isOption = event.isAltPressed || event.isMetaPressed
-        val isCtrl = event.isCtrlPressed // Detekce CTRL klávesy
+        val isModifier = event.isCtrlPressed || event.isAltPressed || event.isMetaPressed
 
-        // 1. ZAVŘENÍ SPOTLIGHTU (ESC)
+        // 1. ZPRACOVÁNÍ APP SWITCHERU (CTRL+TAB nebo ALT+TAB)
+        if (event.keyCode == KeyEvent.KEYCODE_TAB && isModifier) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                handleAppSwitcherTab()
+            }
+            return true
+        }
+
+        // Pokud uživatel pustí klávesu CTRL nebo ALT (Mac-like potvrzení výběru aplikace)
+        if (event.action == KeyEvent.ACTION_UP) {
+            val isModifierKeyReleased = event.keyCode == KeyEvent.KEYCODE_CTRL_LEFT || 
+                                        event.keyCode == KeyEvent.KEYCODE_CTRL_RIGHT || 
+                                        event.keyCode == KeyEvent.KEYCODE_ALT_LEFT || 
+                                        event.keyCode == KeyEvent.KEYCODE_ALT_RIGHT || 
+                                        event.keyCode == KeyEvent.KEYCODE_META_LEFT
+            
+            if (isModifierKeyReleased && appSwitcherLayout != null) {
+                executeAppSwitcherSelection()
+                return true
+            }
+        }
+
         if (rootOverlay != null && event.keyCode == KeyEvent.KEYCODE_ESCAPE) {
             if (event.action == KeyEvent.ACTION_DOWN) closeSpotlight()
             return true
         }
 
-        // 2. NOVINKA: OTEVŘÍT NEDÁVNÉ APLIKACE (CTRL + TAB)
-        if (event.keyCode == KeyEvent.KEYCODE_TAB && isCtrl) {
-            if (event.action == KeyEvent.ACTION_DOWN) {
-                // Vyvolá systémové okno přepínání aplikací!
-                performGlobalAction(GLOBAL_ACTION_RECENTS)
-            }
-            return true
-        }
-
-        // 3. OTEVŘÍT SPOTLIGHT (SHIFT + ENTER)
         if (event.keyCode == KeyEvent.KEYCODE_ENTER && isShift) {
             if (event.action == KeyEvent.ACTION_DOWN) {
-                if (activePackage in blacklist) {
-                    Toast.makeText(this, "Spotlight zakázán!", Toast.LENGTH_SHORT).show()
-                } else {
-                    toggleSpotlight()
-                }
+                if (activePackage in blacklist) Toast.makeText(this, "Spotlight zakázán!", Toast.LENGTH_SHORT).show()
+                else toggleSpotlight()
             }
             return true
         }
 
-        // 4. OTEVŘÍT TERMUX (ALT/OPTION + T)
-        if (event.keyCode == KeyEvent.KEYCODE_T && isOption) {
+        if (event.keyCode == KeyEvent.KEYCODE_T && isModifier) {
             if (event.action == KeyEvent.ACTION_DOWN) {
-                if (activePackage !in blacklist) {
-                    launchFreeform("com.termux")
-                    closeSpotlight()
-                }
+                if (activePackage !in blacklist) { launchFreeform("com.termux"); closeSpotlight() }
             }
             return true
         }
@@ -186,6 +213,121 @@ class ShortcutService : AccessibilityService() {
         return super.onKeyEvent(event)
     }
 
+    // --- MAC APP SWITCHER LOGIKA ---
+    private fun handleAppSwitcherTab() {
+        if (recentApps.isEmpty()) return
+
+        if (appSwitcherLayout == null) {
+            showAppSwitcher()
+            // Vybereme hned druhou aplikaci (předchozí otevřenou), pokud existuje
+            appSwitcherIndex = if (recentApps.size > 1) 1 else 0
+        } else {
+            // Posun výběru o jednu doprava (slovníkový kruh)
+            appSwitcherIndex = (appSwitcherIndex + 1) % recentApps.size
+        }
+        updateAppSwitcherHighlight()
+    }
+
+    private fun showAppSwitcher() {
+        val ctx = ContextThemeWrapper(this, android.R.style.Theme_DeviceDefault)
+        
+        appSwitcherLayout = FrameLayout(ctx).apply {
+            setBackgroundColor(Color.parseColor("#44000000")) // Jemné potemnění okolí
+            setOnClickListener { closeAppSwitcher() }
+        }
+
+        val container = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = GradientDrawable().apply {
+                cornerRadius = 45f
+                setColor(Color.parseColor("#E61C1C1E")) // Tmavé macOS sklo
+                setStroke(2, Color.parseColor("#4DFFFFFF"))
+            }
+            setPadding(40, 40, 40, 40)
+            elevation = 50f
+        }
+
+        appSwitcherViews.clear()
+        
+        for ((index, app) in recentApps.withIndex()) {
+            val appView = LinearLayout(ctx).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(25, 25, 25, 25)
+                background = GradientDrawable().apply {
+                    cornerRadius = 25f
+                    setColor(Color.TRANSPARENT) // Pozadí pro Highlight
+                }
+                
+                val iconView = ImageView(ctx).apply {
+                    setImageDrawable(app.icon)
+                    layoutParams = LinearLayout.LayoutParams(120, 120).apply { bottomMargin = 15 }
+                }
+                
+                val nameView = TextView(ctx).apply {
+                    text = app.name
+                    setTextColor(Color.WHITE)
+                    textSize = 14f
+                    gravity = Gravity.CENTER
+                    maxLines = 1
+                    layoutParams = LinearLayout.LayoutParams(150, LinearLayout.LayoutParams.WRAP_CONTENT)
+                }
+                
+                addView(iconView)
+                addView(nameView)
+
+                // Lze přepnout i kliknutím myší
+                setOnClickListener {
+                    appSwitcherIndex = index
+                    executeAppSwitcherSelection()
+                }
+            }
+            appSwitcherViews.add(appView)
+            container.addView(appView)
+        }
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.CENTER
+        }
+
+        appSwitcherLayout?.addView(container, FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply { gravity = Gravity.CENTER })
+        windowManager?.addView(appSwitcherLayout, params)
+    }
+
+    private fun updateAppSwitcherHighlight() {
+        for ((index, view) in appSwitcherViews.withIndex()) {
+            val bg = view.background as GradientDrawable
+            if (index == appSwitcherIndex) {
+                bg.setColor(Color.parseColor("#55FFFFFF")) // Zvýraznění (Mac selection box)
+            } else {
+                bg.setColor(Color.TRANSPARENT)
+            }
+        }
+    }
+
+    private fun executeAppSwitcherSelection() {
+        if (appSwitcherIndex in recentApps.indices) {
+            launchFreeform(recentApps[appSwitcherIndex].packageName)
+        }
+        closeAppSwitcher()
+    }
+
+    private fun closeAppSwitcher() {
+        appSwitcherLayout?.let {
+            windowManager?.removeView(it)
+            appSwitcherLayout = null
+        }
+    }
+    // --- KONEC APP SWITCHER LOGIKY ---
+
+
+    // --- ZBYTEK KÓDU (MAC SPOTLIGHT A WIDGETY) ---
     private fun changeTextSafely(text: String) {
         isProgrammaticTextChange = true
         spotlightInput?.setText(text)
@@ -335,7 +477,7 @@ class ShortcutService : AccessibilityService() {
                         }
 
                         thread {
-                            val results = mutableListOf<SearchResult>()
+                            val results = mutableListOf<SearchRessult>()
                             for (app in cachedApps) {
                                 if (app.name.lowercase().contains(query)) {
                                     results.add(SearchResult(app.name, "Aplikace: ${app.packageName}", app.icon, "") {
