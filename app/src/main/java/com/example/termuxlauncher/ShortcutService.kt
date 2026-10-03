@@ -69,7 +69,6 @@ class ShortcutService : AccessibilityService() {
     private var resultsContainer: LinearLayout? = null
     private var widgetsScroll: HorizontalScrollView? = null
 
-    // Zde je správně definován SearchResult
     data class SearchResult(val title: String, val subtitle: String, val icon: Drawable?, val emoji: String, val action: () -> Unit)
     data class AppItem(val name: String, val packageName: String, val icon: Drawable?)
 
@@ -88,7 +87,7 @@ class ShortcutService : AccessibilityService() {
             prefs.edit().putStringSet("active_widgets", setOf("clock", "battery")).apply()
         }
 
-        Toast.makeText(this, "MAC UI spuštěno!", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "MAC UI + ALT+4 = Zavřít okno (Minimalizace)", Toast.LENGTH_SHORT).show()
         updateAppCache()
 
         val filter = IntentFilter().apply {
@@ -163,8 +162,19 @@ class ShortcutService : AccessibilityService() {
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
         val isShift = event.isShiftPressed
+        val isAlt = event.isAltPressed
         val isModifier = event.isCtrlPressed || event.isAltPressed || event.isMetaPressed
 
+        // --- ZAVŘÍT OKNO / APP (ALT + 4) ---
+        // Vyvolá příkaz HOME, což okamžitě "shodí" okno z obrazovky pryč
+        if (event.keyCode == KeyEvent.KEYCODE_4 && isAlt) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                performGlobalAction(GLOBAL_ACTION_HOME)
+            }
+            return true
+        }
+
+        // --- APP SWITCHER (CTRL+TAB nebo ALT+TAB) ---
         if (event.keyCode == KeyEvent.KEYCODE_TAB && isModifier) {
             if (event.action == KeyEvent.ACTION_DOWN) {
                 handleAppSwitcherTab()
@@ -185,6 +195,7 @@ class ShortcutService : AccessibilityService() {
             }
         }
 
+        // --- SPOTLIGHT ZKRATKY ---
         if (rootOverlay != null && event.keyCode == KeyEvent.KEYCODE_ESCAPE) {
             if (event.action == KeyEvent.ACTION_DOWN) closeSpotlight()
             return true
@@ -485,8 +496,6 @@ class ShortcutService : AccessibilityService() {
                                         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                         startActivity(intent); closeSpotlight()
                                     }
-                                    
-                                    // Zde je správně použito SearchResult s jedním s!
                                     currentResults = listOf(SearchResult("Hledat na webu", "", null, "🌐", fallbackAction))
                                     addMenuItem("Hledat na webu", "Vyhledat \"$query\" v prohlížeči", null, "🌐") { fallbackAction() }
                                 } else {
